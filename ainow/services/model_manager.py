@@ -3,6 +3,11 @@ Model manager — starts/stops llama-server with different GGUF models.
 
 Singleton that manages the llama-server process lifecycle.
 Started once at server boot via CLI --model flag.
+
+Models are configured via environment variables:
+  LLAMA_SERVER_EXE  — path to llama-server binary
+  MODELS_DIR        — base directory for GGUF model files
+  MODEL_<ALIAS>     — override path for a specific model (e.g. MODEL_GEMMA=/path/to/model.gguf)
 """
 
 import os
@@ -16,17 +21,9 @@ from ..log import get_logger
 
 logger = get_logger("ainow.model_manager")
 
-LLAMA_SERVER_EXE = os.getenv(
-    "LLAMA_SERVER_EXE",
-    r"D:\dev\llama-server\llama-server.exe",
-)
-
+LLAMA_SERVER_EXE = os.getenv("LLAMA_SERVER_EXE", "llama-server")
 LLAMA_SERVER_PORT = int(os.getenv("LLAMA_SERVER_PORT", "8080"))
-
-MODELS_DIR = os.getenv(
-    "MODELS_DIR",
-    r"C:\Users\angel\.lmstudio\models\lmstudio-community",
-)
+MODELS_DIR = os.getenv("MODELS_DIR", os.path.join(os.path.expanduser("~"), "models"))
 
 # Short aliases for CLI (--model 4b)
 MODEL_ALIASES = {
@@ -36,49 +33,98 @@ MODEL_ALIASES = {
     "9b": "qwen3.5-9b",
     "27b": "qwen3.5-27b",
     "online": "openrouter-gemini-flash-lite",
-    "gemma": "gemma-4b",
 }
 
-MODELS = {
-    "qwen3.5-0.8b": {
-        "name": "Qwen 0.8B",
-        "model": f"{MODELS_DIR}\\Qwen3.5-0.8B-GGUF\\Qwen3.5-0.8B-Q8_0.gguf",
-        "mmproj": f"{MODELS_DIR}\\Qwen3.5-0.8B-GGUF\\mmproj-Qwen3.5-0.8B-BF16.gguf",
-    },
-    "qwen3.5-2b": {
-        "name": "Qwen 2B",
-        "model": f"{MODELS_DIR}\\Qwen3.5-2B-GGUF\\Qwen3.5-2B-Q4_K_M.gguf",
-        "mmproj": f"{MODELS_DIR}\\Qwen3.5-2B-GGUF\\mmproj-Qwen3.5-2B-BF16.gguf",
-    },
-    "qwen3.5-4b": {
-        "name": "Qwen 4B",
-        "model": f"{MODELS_DIR}\\Qwen3.5-4B-GGUF\\Qwen3.5-4B-Q4_K_M.gguf",
-        "mmproj": f"{MODELS_DIR}\\Qwen3.5-4B-GGUF\\mmproj-Qwen3.5-4B-BF16.gguf",
-    },
-    "qwen3.5-9b": {
-        "name": "Qwen 9B",
-        "model": f"{MODELS_DIR}\\Qwen3.5-9B-GGUF\\Qwen3.5-9B-UD-Q4_K_XL.gguf",
-        "mmproj": f"{MODELS_DIR}\\Qwen3.5-9B-GGUF\\mmproj-Qwen3.5-9B-BF16.gguf",
-    },
-    "qwen3.5-27b": {
-        "name": "Qwen 27B",
-        "model": f"{MODELS_DIR}\\Qwen3.5-27B-GGUF\\Qwen3.5-27B-UD-IQ3_XXS.gguf",
-        "mmproj": f"{MODELS_DIR}\\Qwen3.5-27B-GGUF\\mmproj-BF16.gguf",
-        "ctx": "32768",
-    },
-    "gemma-4b": {
-        "name": "Gemma 4B",
-        "model": r"C:\Users\angel\.lmstudio\models\HauhauCS\Gemma-4-E4B-Uncensored-HauhauCS-Aggressive\Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
-        "mmproj": r"C:\Users\angel\.lmstudio\models\HauhauCS\Gemma-4-E4B-Uncensored-HauhauCS-Aggressive\mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf",
-    },
-    "openrouter-gemini-flash-lite": {
-        "name": "Gemini Flash Lite (OpenRouter)",
-        "online": True,
-        "base_url": "https://openrouter.ai/api/v1",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "model_id": "google/gemini-3.1-flash-lite-preview",
-    },
-}
+
+def _model_path(*parts):
+    """Build a model path relative to MODELS_DIR."""
+    return os.path.join(MODELS_DIR, *parts)
+
+
+def _build_models():
+    """Build model configs. Env var MODEL_<ALIAS> overrides the default path."""
+    models = {
+        "qwen3.5-0.8b": {
+            "name": "Qwen 0.8B",
+            "model": _model_path("Qwen3.5-0.8B-GGUF", "Qwen3.5-0.8B-Q8_0.gguf"),
+            "mmproj": _model_path("Qwen3.5-0.8B-GGUF", "mmproj-Qwen3.5-0.8B-BF16.gguf"),
+        },
+        "qwen3.5-2b": {
+            "name": "Qwen 2B",
+            "model": _model_path("Qwen3.5-2B-GGUF", "Qwen3.5-2B-Q4_K_M.gguf"),
+            "mmproj": _model_path("Qwen3.5-2B-GGUF", "mmproj-Qwen3.5-2B-BF16.gguf"),
+        },
+        "qwen3.5-4b": {
+            "name": "Qwen 4B",
+            "model": _model_path("Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
+            "mmproj": _model_path("Qwen3.5-4B-GGUF", "mmproj-Qwen3.5-4B-BF16.gguf"),
+        },
+        "qwen3.5-9b": {
+            "name": "Qwen 9B",
+            "model": _model_path("Qwen3.5-9B-GGUF", "Qwen3.5-9B-UD-Q4_K_XL.gguf"),
+            "mmproj": _model_path("Qwen3.5-9B-GGUF", "mmproj-Qwen3.5-9B-BF16.gguf"),
+        },
+        "qwen3.5-27b": {
+            "name": "Qwen 27B",
+            "model": _model_path("Qwen3.5-27B-GGUF", "Qwen3.5-27B-UD-IQ3_XXS.gguf"),
+            "mmproj": _model_path("Qwen3.5-27B-GGUF", "mmproj-BF16.gguf"),
+            "ctx": "32768",
+        },
+        "openrouter-gemini-flash-lite": {
+            "name": "Gemini Flash Lite (OpenRouter)",
+            "online": True,
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY",
+            "model_id": "google/gemini-3.1-flash-lite-preview",
+        },
+    }
+
+    # Register extra models from env vars: MODEL_GEMMA=/path/to/dir
+    # Format: MODEL_<ALIAS>=<model_gguf_path>;<mmproj_gguf_path>;<display_name>
+    # Or:     MODEL_<ALIAS>=<directory>  (auto-detect .gguf and mmproj files)
+    for key, value in os.environ.items():
+        if not key.startswith("MODEL_") or key in ("MODELS_DIR", "MODEL_ALIASES"):
+            continue
+        alias = key[6:].lower()  # MODEL_GEMMA -> gemma
+        if alias in MODEL_ALIASES or alias in models:
+            continue
+
+        if ";" in value:
+            # Explicit: MODEL_GEMMA=/path/model.gguf;/path/mmproj.gguf;Gemma 4B
+            parts = value.split(";")
+            model_file = parts[0].strip()
+            mmproj_file = parts[1].strip() if len(parts) > 1 else ""
+            display_name = parts[2].strip() if len(parts) > 2 else alias.upper()
+        elif os.path.isdir(value):
+            # Directory: auto-detect model and mmproj files
+            model_file = ""
+            mmproj_file = ""
+            display_name = alias.upper()
+            for f in os.listdir(value):
+                fl = f.lower()
+                if fl.endswith(".gguf"):
+                    if "mmproj" in fl:
+                        mmproj_file = os.path.join(value, f)
+                    elif not model_file:
+                        model_file = os.path.join(value, f)
+        else:
+            # Single file path — assume it's the model, no mmproj
+            model_file = value
+            mmproj_file = ""
+            display_name = alias.upper()
+
+        if model_file:
+            MODEL_ALIASES[alias] = alias
+            config = {"name": display_name, "model": model_file}
+            if mmproj_file:
+                config["mmproj"] = mmproj_file
+            models[alias] = config
+            logger.info(f"Registered custom model '{alias}' from env")
+
+    return models
+
+
+MODELS = _build_models()
 
 COMMON_ARGS = [
     "-c", "262144",
@@ -183,11 +229,10 @@ class ModelManager:
             self._stop_server_sync()
 
         # Start new server
-        cmd = [
-            LLAMA_SERVER_EXE,
-            "-m", config["model"],
-            "--mmproj", config["mmproj"],
-        ] + COMMON_ARGS
+        cmd = [LLAMA_SERVER_EXE, "-m", config["model"]]
+        if config.get("mmproj"):
+            cmd += ["--mmproj", config["mmproj"]]
+        cmd += COMMON_ARGS
         # Per-model context override
         if "ctx" in config:
             cmd[cmd.index("-c") + 1] = config["ctx"]
