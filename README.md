@@ -1,28 +1,26 @@
 # AINow
 
-A voice agent framework with vision and browser tools. Runs entirely local — no cloud APIs required.
+A conversational AI framework with voice, vision, and tool calling. Runs entirely local — no cloud APIs required.
 
 ```bash
 python main.py
-# Open http://localhost:3040 in your browser
+# Open http://localhost:3040
 ```
 
 ## How it works
 
 Browser-based voice assistant with streaming LLM, TTS, and tool calling:
 
-- **Browser STT** — Web Speech API for speech-to-text and turn detection (no server-side STT needed)
+- **Browser STT** — Web Speech API for speech-to-text and turn detection
 - **Local LLM** — Any OpenAI-compatible server (llama.cpp, Ollama, vLLM) with vision + tool calling
-- **Browser TTS** — Native `speechSynthesis` API with voice picker popup, preview, and localStorage persistence. Prioritizes Online (neural) voices. Falls back to local Kokoro when `SERVER_TTS` is set
-- **Agent** — LLM → TTS → Browser audio pipeline, owns conversation history
-- **Browser Tools** — LLM can capture webcam/screen frames and see them via vision
-- **Tool Confirmation** — Dangerous tools (write, edit, bash) require user approval via in-UI confirm/deny buttons
+- **Browser TTS** — Native `speechSynthesis` with voice picker, preview, and language support. Falls back to local Kokoro when `SERVER_TTS` is set
+- **Tool Calling** — Web search, web fetch, file ops, bash, webcam/screen capture
+- **Conversation History** — Sidebar with saved conversations (localStorage)
 - **Text + Voice Input** — Type messages or speak; attach images via upload, paste, or drag-and-drop
-- **Multi-Language** — Language selector (EN/FR/ES/IT/PT/ZH/HI) switches STT, TTS voice, and server language in real time
-- **Barge-In** — Client-side Silero VAD (voice activity detection) interrupts bot speech instantly when the user starts talking. Mic stays live during TTS playback (audio send is paused, not the mic track) so VAD can detect speech; browser echo cancellation prevents false triggers
-- **`process_event(state, event) → (state, actions)`** — the entire state machine in ~30 lines
+- **Multi-Language** — Language selector (EN/FR/ES/IT/PT/ZH/HI) switches STT and TTS in real time
+- **Barge-In** — VAD interrupts bot speech when user starts talking
 
-Everything streams. LLM tokens feed TTS immediately, TTS audio plays in the browser. Barge-in cancels everything instantly.
+Everything streams. LLM tokens feed TTS immediately. Barge-in cancels everything instantly.
 
 ```
 LISTENING ──EndOfTurn──→ RESPONDING ──Done──→ LISTENING
@@ -30,126 +28,70 @@ LISTENING ──EndOfTurn──→ RESPONDING ──Done──→ LISTENING
     └────StartOfTurn─────────┘  (barge-in)
 ```
 
-## UI Features
+## Usage
 
-- **Voice Picker** — Glass-style popup (🎙️ button) lists available browser voices, filtered by language with Online voices first. Click to select, play button to preview. Choice persists across sessions via localStorage
-- **TTS Mute** — 🔊 toggle to mute/unmute speech output
-- **Webcam / Screen Share** — Toggle buttons to share webcam or screen with the agent
-- **Custom System Prompt** — Expandable textarea (fills available vertical space) to customize the agent's behavior
-- **Image Attachments** — Upload, paste, or drag-and-drop images into the chat
-- **Pipeline Visualization** — Real-time STT → LLM → TTS → Playing stage indicators with latency metrics
+```bash
+python main.py                    # default: Qwen 9B, browser STT/TTS
+python main.py -m 4b              # smaller model (less VRAM)
+python main.py -m 27b             # larger model (more quality)
+python main.py -m gemma           # Gemma 4B (uncensored)
+python main.py -m online          # Gemini Flash Lite via OpenRouter (no local GPU needed)
+python main.py +1234567890        # outbound call via Twilio
+```
+
+### Available models
+
+| Flag | Model | Size | Notes |
+|------|-------|------|-------|
+| `-m 0.8b` | Qwen 3.5 0.8B Q8_0 | ~1 GB | Fastest, minimal quality |
+| `-m 2b` | Qwen 3.5 2B Q4_K_M | ~1.5 GB | Budget GPU |
+| `-m 4b` | Qwen 3.5 4B Q4_K_M | ~2.8 GB | Good for 8 GB VRAM |
+| `-m 9b` | Qwen 3.5 9B UD-Q4_K_XL | ~6 GB | **Default**, best balance |
+| `-m 27b` | Qwen 3.5 27B UD-IQ3_XXS | ~11 GB | Highest quality |
+| `-m gemma` | Gemma 4B Uncensored Q4_K_M | ~5 GB | No content filters |
+| `-m online` | Gemini Flash Lite (OpenRouter) | 0 GB | Cloud, needs API key |
+
+All local models include vision (mmproj). The model manager starts llama-server automatically.
+
+### VRAM guidelines
+
+| VRAM | Recommended | Command |
+|------|-------------|---------|
+| 4 GB | Qwen 0.8B | `python main.py -m 0.8b` |
+| 8 GB | Qwen 4B | `python main.py -m 4b` |
+| 16 GB | Qwen 9B (default) | `python main.py` |
+| 24 GB | Qwen 27B | `python main.py -m 27b` |
+| No GPU | Gemini online | `python main.py -m online` |
 
 ## Tools
-
-The agent has access to:
 
 | Category | Tools |
 |----------|-------|
 | File ops | `read`, `write`, `edit`, `multi_edit` |
 | Search | `grep`, `glob`, `ls` |
 | System | `bash` |
+| Web | `web_search`, `web_fetch` |
 | Browser | `list_devices`, `capture_frame(source="webcam"\|"screen")` |
 
-Browser tools execute client-side via WebSocket — the LLM can see through the webcam or capture the screen. Dangerous tools require user confirmation before execution.
+Dangerous tools (write, edit, bash) require user confirmation before execution.
 
-## CLI Usage
+## UI Features
 
-```bash
-python main.py                         # default: 9B model, server-only mode
-python main.py --model 4b              # start with 4B model
-python main.py --model 27b             # start with 27B model
-python main.py +1234567890             # outbound call to phone number
-python main.py --model 9b +1234567890  # specific model + outbound call
-```
-
-### Model sizes
-
-| Alias | Model | Quant | Size |
-|-------|-------|-------|------|
-| `0.8b` | Qwen 3.5 0.8B | Q8_0 | ~1 GB |
-| `2b` | Qwen 3.5 2B | Q4_K_M | ~1.5 GB |
-| `4b` | Qwen 3.5 4B | Q4_K_M | ~2.8 GB |
-| `9b` | Qwen 3.5 9B | UD-Q4_K_XL | ~6 GB |
-| `27b` | Qwen 3.5 27B | UD-IQ3_XXS | ~11 GB |
-
-All models include vision (mmproj). The model manager starts llama-server automatically.
-
-### Start scripts
-
-Quick-launch scripts for each model size:
-
-```bash
-start-0.8b.cmd    # Qwen 0.8B
-start-2b.cmd      # Qwen 2B
-start-4b.cmd      # Qwen 4B
-start-9b.cmd      # Qwen 9B (default)
-start-27b.cmd     # Qwen 27B
-```
-
-Pass additional arguments after the script name, e.g. `start-9b.cmd +1234567890` for outbound calls.
-
-### Optimal 16 GB VRAM
-
-```bash
-optimal16GB.bat
-```
-
-Best quality combination for a 16 GB GPU: **Qwen 9B UD-Q4_K_XL** (~6 GB) + **Whisper large-v3** (~3 GB) + vision mmproj (~1 GB). Leaves ~6 GB headroom for KV cache and context. Fast LLM inference with the best available STT accuracy.
-
-### Comfort 16 GB VRAM
-
-```bash
-comfort16GB.bat
-```
-
-Maximum context for long conversations: **Qwen 9B UD-Q4_K_XL** (~6 GB) + **Whisper medium** (~1.5 GB) + 256K context with Q4_0 KV cache. Uses ~13 GB, leaving headroom. Best for extended sessions where context length matters more than STT accuracy.
-
-### Budget 8 GB VRAM
-
-```bash
-start-4b.cmd
-```
-
-Good balance for 8 GB GPUs: **Qwen 4B Q4_K_M** (~2.8 GB) + **Whisper small** (~0.5 GB) + vision mmproj (~0.6 GB). Leaves room for KV cache. Smart enough for conversation and tool use, fast inference.
-
-### Fastest (low VRAM)
-
-```bash
-start-0.8b.cmd
-```
-
-Fastest possible response times with **Qwen 0.8B Q8_0** (~1 GB) + **Whisper small** (~0.5 GB). Minimal VRAM usage, near-instant inference. Not very smart — best for testing latency or low-end hardware.
-
-## Project structure
-
-```
-ainow/
-  types.py              # Immutable state, events, actions
-  state.py              # Pure state machine (~30 lines)
-  conversation.py       # Main event loop (browser + Twilio)
-  agent.py              # LLM → TTS → Player pipeline
-  log.py                # Colored logging
-  server.py             # FastAPI endpoints
-  tracer.py             # Per-call JSON trace logging (/tmp/ainow/)
-  static/index.html     # Browser UI (single-file SPA)
-  services/
-    llm.py              # OpenAI-compatible streaming + tool calling + vision
-    tools.py            # Tool definitions + execution (file ops, search, bash, browser)
-    model_manager.py    # Auto-download + launch llama-server
-    local_tts.py        # Kokoro TTS (local, multi-language)
-    fish_tts.py         # Fish Speech TTS (self-hosted, optional)
-    tts.py              # ElevenLabs WebSocket streaming (optional)
-    tts_pool.py         # TTS connection pool
-    browser_player.py   # Audio playback to browser via WebSocket
-    whisper_stt.py      # Whisper STT (server-side, optional)
-    player.py           # Audio playback to Twilio (optional)
-    flux.py             # Deepgram Flux STT (optional)
-    twilio_client.py    # Twilio calls (optional)
-```
+- **Conversation History** — Sidebar with saved conversations, auto-save, create/delete
+- **Voice Picker** — Browse and preview available browser voices, filtered by language
+- **Stop Button** — Instantly stop generation and TTS playback
+- **Mic Mute** — Manual mic toggle, independent of auto-mute during TTS
+- **TTS Mute** — Silence speech output while keeping text streaming
+- **Webcam / Screen Share** — Share webcam or screen with the agent
+- **Custom System Prompt** — Editable system prompt, applied live
+- **Image Attachments** — Upload, paste, or drag-and-drop images
+- **Pipeline Metrics** — Real-time STT → LLM → TTS latency, token count, tokens/s per response
+- **Markdown Rendering** — Headings, lists, code blocks, bold/italic in responses
+- **Clear Session** — Reset conversation context without disconnecting
 
 ## Setup
 
-Requires Python 3.9+.
+Requires Python 3.9+ and a CUDA GPU (for local models).
 
 ```bash
 pip install -r requirements.txt
@@ -157,51 +99,58 @@ cp .env.example .env   # edit as needed
 python main.py
 ```
 
-The model manager will download the default model and start llama-server automatically. To use your own LLM server instead, set `LLM_BASE_URL` in `.env`.
-
 ### Environment variables
 
 ```bash
-# LLM (auto-managed by default; set these to use an external server)
+# Server
+PORT=3040                         # Web UI port (default: 3040)
+
+# LLM (auto-managed by default; set to use an external server)
 LLM_BASE_URL=http://localhost:8080/v1
 LLM_API_KEY=not-needed
 LLM_MODEL=Qwen3.5-9B-UD-Q4_K_XL.gguf
 
+# Online mode (no local GPU)
+OPENROUTER_API_KEY=your_key       # for -m online
+
+# STT mode (default: browser Web Speech API)
+BROWSER_STT=1                     # explicit browser STT
+DEEPGRAM_API_KEY=your_key         # server-side Deepgram Flux STT
+WHISPER_MODEL=large-v3            # server-side Whisper STT
+
 # TTS mode (default: browser speechSynthesis)
-SERVER_TTS=1              # use server-side Kokoro TTS instead of browser TTS
-LOCAL_TTS_VOICE=af_heart  # Kokoro voice name (when using server TTS)
-
-# Optional: Fish Speech TTS (self-hosted)
-FISH_TTS_URL=http://localhost:8082
-
-# Optional: ElevenLabs TTS (cloud)
-ELEVENLABS_API_KEY=your_key
-
-# Optional: Whisper STT (server-side, faster-whisper on CUDA)
-WHISPER_MODEL=large-v3        # Whisper model size: tiny, base, small, medium, large-v3
-
-# Optional: Deepgram STT (if not set, uses browser Web Speech API)
-DEEPGRAM_API_KEY=your_key
-
-# Model directory (default: ./models)
-MODELS_DIR=/path/to/models
+SERVER_TTS=1                      # use server-side TTS instead
+LOCAL_TTS_VOICE=1                 # local Kokoro TTS (no API key)
+FISH_TTS_URL=http://localhost:8082  # Fish Speech TTS
+ELEVENLABS_API_KEY=your_key       # ElevenLabs cloud TTS
 ```
 
-## API Endpoints
+## Project structure
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Browser UI |
-| `WebSocket /ws` | Browser voice session |
-| `GET /trace/latest` | Latest call trace JSON |
-| `GET /bench/ttft` | TTFT benchmark across models |
-| `GET/POST /twiml` | Twilio TwiML webhook |
-| `GET /call/{phone}` | Initiate outbound call |
-
-## Tests
-
-```bash
-python -m pytest tests/ -v
+```
+ainow/
+  server.py             # FastAPI endpoints
+  conversation.py       # Main event loop (browser + Twilio)
+  agent.py              # LLM → TTS → Player pipeline
+  state.py              # Pure state machine (~30 lines)
+  types.py              # Immutable state, events, actions
+  log.py                # Colored logging
+  tracer.py             # Per-call JSON trace logging
+  static/index.html     # Browser UI (single-file SPA)
+  services/
+    llm.py              # OpenAI streaming + tool calling + vision
+    tools.py            # Tool definitions + execution
+    model_manager.py    # Launch llama-server with model configs
+    local_tts.py        # Kokoro TTS (local)
+    fish_tts.py         # Fish Speech TTS (self-hosted)
+    tts.py              # ElevenLabs WebSocket streaming
+    tts_pool.py         # TTS connection pool
+    browser_player.py   # Audio playback via WebSocket
+    whisper_stt.py      # Whisper STT (server-side)
+    flux.py             # Deepgram Flux STT
+    player.py           # Audio playback to Twilio
+    twilio_client.py    # Twilio outbound calls
+main.py                 # CLI entry point
 ```
 
 ## License
