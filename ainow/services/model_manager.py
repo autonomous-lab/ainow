@@ -32,7 +32,7 @@ MODEL_ALIASES = {
     "4b": "qwen3.5-4b",
     "9b": "qwen3.5-9b",
     "27b": "qwen3.5-27b",
-    "online": "openrouter-gemini-flash-lite",
+    "online": "online",
 }
 
 
@@ -80,12 +80,12 @@ def _build_models():
             "mmproj": _model_path("Qwen3.5-27B-GGUF", "mmproj-BF16.gguf"),
             "ctx": "32768",
         },
-        "openrouter-gemini-flash-lite": {
-            "name": "Gemini Flash Lite (OpenRouter)",
+        "online": {
+            "name": os.getenv("ONLINE_MODEL", "google/gemini-3.1-flash-lite-preview"),
             "online": True,
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key_env": "OPENROUTER_API_KEY",
-            "model_id": "google/gemini-3.1-flash-lite-preview",
+            "base_url": os.getenv("ONLINE_BASE_URL", "https://openrouter.ai/api/v1"),
+            "api_key_env": "ONLINE_API_KEY",
+            "model_id": os.getenv("ONLINE_MODEL", "google/gemini-3.1-flash-lite-preview"),
         },
     }
 

@@ -60,19 +60,12 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
     # ── Browser TTS (Chrome speechSynthesis) ───────────────────
     use_browser_tts = not bool(os.getenv("SERVER_TTS"))  # default: browser TTS
 
-    # ── TTS Pool (Fish Speech or local Kokoro) ────────────────
+    # ── TTS Pool (local Kokoro) ──────────────────────────────
     tts_pool = None
-    use_fish_tts = bool(os.getenv("FISH_TTS_URL"))
     use_local_tts = bool(os.getenv("LOCAL_TTS_VOICE"))
-    if not use_browser_tts:
-        if use_fish_tts:
-            from .services.fish_tts import FishTTSPool
-            fish_url = os.getenv("FISH_TTS_URL", "http://localhost:8080")
-            fish_ref = os.getenv("FISH_VOICE_ID", "") or None
-            tts_pool = FishTTSPool(api_url=fish_url, reference_id=fish_ref)
-        elif use_local_tts:
-            from .services.local_tts import LocalTTSPool
-            tts_pool = LocalTTSPool()
+    if not use_browser_tts and use_local_tts:
+        from .services.local_tts import LocalTTSPool
+        tts_pool = LocalTTSPool()
 
     # ── STT Backend ────────────────────────────────────────────────
     # Browser STT mode: browser handles speech recognition, no server STT needed.
@@ -321,7 +314,7 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                 )
 
                 # Send config to browser (sample rate for audio playback)
-                sample_rate = 24000 if (use_local_tts or use_fish_tts) else 16000
+                sample_rate = 24000 if use_local_tts else 16000
                 from .services.llm import SYSTEM_PROMPT
                 try:
                     await websocket.send_text(json.dumps({

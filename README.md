@@ -149,4 +149,4 @@ main.py                 # CLI entry point
 
 ## License
 
-MIT
+Apache 2.0

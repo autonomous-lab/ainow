@@ -252,7 +252,6 @@ class ServiceLogger:
         "LLM": C.BRIGHT_MAGENTA,
         "TTS": C.BRIGHT_CYAN,
         "LocalTTS": C.BRIGHT_CYAN,
-        "FishTTS": C.BRIGHT_CYAN,
         "Player": C.WHITE,
         "BrowserPlayer": C.WHITE,
         "Agent": C.BRIGHT_GREEN,
