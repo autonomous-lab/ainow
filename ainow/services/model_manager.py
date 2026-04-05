@@ -46,26 +46,36 @@ def _build_models():
     models = {
         "qwen3.5-0.8b": {
             "name": "Qwen 0.8B",
+            "hf_repo": "lmstudio-community/Qwen3.5-0.8B-GGUF",
+            "hf_files": ["Qwen3.5-0.8B-Q8_0.gguf", "mmproj-Qwen3.5-0.8B-BF16.gguf"],
             "model": _model_path("Qwen3.5-0.8B-GGUF", "Qwen3.5-0.8B-Q8_0.gguf"),
             "mmproj": _model_path("Qwen3.5-0.8B-GGUF", "mmproj-Qwen3.5-0.8B-BF16.gguf"),
         },
         "qwen3.5-2b": {
             "name": "Qwen 2B",
+            "hf_repo": "lmstudio-community/Qwen3.5-2B-GGUF",
+            "hf_files": ["Qwen3.5-2B-Q4_K_M.gguf", "mmproj-Qwen3.5-2B-BF16.gguf"],
             "model": _model_path("Qwen3.5-2B-GGUF", "Qwen3.5-2B-Q4_K_M.gguf"),
             "mmproj": _model_path("Qwen3.5-2B-GGUF", "mmproj-Qwen3.5-2B-BF16.gguf"),
         },
         "qwen3.5-4b": {
             "name": "Qwen 4B",
+            "hf_repo": "lmstudio-community/Qwen3.5-4B-GGUF",
+            "hf_files": ["Qwen3.5-4B-Q4_K_M.gguf", "mmproj-Qwen3.5-4B-BF16.gguf"],
             "model": _model_path("Qwen3.5-4B-GGUF", "Qwen3.5-4B-Q4_K_M.gguf"),
             "mmproj": _model_path("Qwen3.5-4B-GGUF", "mmproj-Qwen3.5-4B-BF16.gguf"),
         },
         "qwen3.5-9b": {
             "name": "Qwen 9B",
+            "hf_repo": "lmstudio-community/Qwen3.5-9B-GGUF",
+            "hf_files": ["Qwen3.5-9B-UD-Q4_K_XL.gguf", "mmproj-Qwen3.5-9B-BF16.gguf"],
             "model": _model_path("Qwen3.5-9B-GGUF", "Qwen3.5-9B-UD-Q4_K_XL.gguf"),
             "mmproj": _model_path("Qwen3.5-9B-GGUF", "mmproj-Qwen3.5-9B-BF16.gguf"),
         },
         "qwen3.5-27b": {
             "name": "Qwen 27B",
+            "hf_repo": "lmstudio-community/Qwen3.5-27B-GGUF",
+            "hf_files": ["Qwen3.5-27B-UD-IQ3_XXS.gguf", "mmproj-BF16.gguf"],
             "model": _model_path("Qwen3.5-27B-GGUF", "Qwen3.5-27B-UD-IQ3_XXS.gguf"),
             "mmproj": _model_path("Qwen3.5-27B-GGUF", "mmproj-BF16.gguf"),
             "ctx": "32768",
@@ -141,6 +151,110 @@ COMMON_ARGS = [
     "--reasoning-budget", "0",
     "--port", str(LLAMA_SERVER_PORT),
 ]
+
+
+def _ensure_llama_server():
+    """Download llama-server from GitHub if not found."""
+    global LLAMA_SERVER_EXE
+
+    if os.path.isfile(LLAMA_SERVER_EXE):
+        return
+
+    # Only auto-download if using default name (not a custom path)
+    if os.path.dirname(LLAMA_SERVER_EXE):
+        # User specified a full path that doesn't exist
+        raise FileNotFoundError(f"llama-server not found at: {LLAMA_SERVER_EXE}")
+
+    import platform
+    import zipfile
+
+    logger.info("llama-server not found, downloading latest release...")
+
+    # Detect platform
+    system = platform.system().lower()  # windows, linux, darwin
+
+    # Get latest release info
+    resp = httpx.get(
+        "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest",
+        timeout=30,
+    )
+    resp.raise_for_status()
+    release = resp.json()
+    tag = release["tag_name"]
+
+    # Find the right asset
+    target = None
+    cudart_target = None
+    for asset in release["assets"]:
+        name = asset["name"]
+        if system == "windows" and "win" in name and "cuda" in name and name.endswith(".zip"):
+            if "cudart" not in name:
+                target = asset
+            else:
+                cudart_target = asset
+        elif system == "linux" and "linux" in name and "cuda" in name and name.endswith(".zip"):
+            if "cudart" not in name:
+                target = asset
+            else:
+                cudart_target = asset
+
+    if not target:
+        raise RuntimeError(f"No suitable llama-server release found for {system}")
+
+    # Download and extract next to MODELS_DIR
+    install_dir = os.path.join(os.path.dirname(MODELS_DIR), "llama-server")
+    os.makedirs(install_dir, exist_ok=True)
+
+    for asset in [target, cudart_target]:
+        if not asset:
+            continue
+        url = asset["browser_download_url"]
+        zip_path = os.path.join(install_dir, asset["name"])
+
+        logger.info(f"Downloading {asset['name']}...")
+        with httpx.stream("GET", url, follow_redirects=True, timeout=300) as r:
+            r.raise_for_status()
+            with open(zip_path, "wb") as f:
+                for chunk in r.iter_bytes(8192):
+                    f.write(chunk)
+
+        with zipfile.ZipFile(zip_path, "r") as z:
+            z.extractall(install_dir)
+        os.remove(zip_path)
+
+    # Update the global to point to the downloaded binary
+    exe_name = "llama-server.exe" if system == "windows" else "llama-server"
+    LLAMA_SERVER_EXE = os.path.join(install_dir, exe_name)
+
+    if not os.path.isfile(LLAMA_SERVER_EXE):
+        raise RuntimeError(f"Download succeeded but {exe_name} not found in {install_dir}")
+
+    logger.info(f"llama-server {tag} installed to {install_dir}")
+
+
+def _ensure_model_files(config):
+    """Download model files from HuggingFace if not present."""
+    if "hf_repo" not in config:
+        return  # Custom or online model, user manages files
+
+    from huggingface_hub import hf_hub_download
+
+    for filename in config.get("hf_files", []):
+        # The subfolder in MODELS_DIR is derived from the HF repo name's last part
+        subfolder = config["hf_repo"].split("/")[-1]
+        local_path = os.path.join(MODELS_DIR, subfolder, filename)
+
+        if os.path.exists(local_path):
+            continue
+
+        logger.info(f"Downloading {filename} from {config['hf_repo']}...")
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        hf_hub_download(
+            repo_id=config["hf_repo"],
+            filename=filename,
+            local_dir=os.path.join(MODELS_DIR, subfolder),
+        )
+        logger.info(f"Downloaded {filename}")
 
 
 def resolve_model_id(name: str) -> str:
@@ -221,6 +335,12 @@ class ModelManager:
             raise ValueError(f"Unknown model: {model_id}")
 
         config = MODELS[model_id]
+
+        # Auto-download llama-server and model files if missing
+        if not config.get("online"):
+            _ensure_llama_server()
+            _ensure_model_files(config)
+
         logger.info(f"Starting llama-server with {config['name']}...")
 
         # Stop any existing server

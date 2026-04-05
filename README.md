@@ -92,6 +92,8 @@ Dangerous tools (write, edit, bash) require user confirmation before execution.
 
 Requires Python 3.9+ and a CUDA GPU (for local models).
 
+Models and llama-server are **auto-downloaded on first run**. The selected GGUF model files are fetched from HuggingFace, and the llama-server CUDA binary is downloaded from the latest llama.cpp GitHub release. No manual setup needed beyond installing dependencies.
+
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # edit as needed
