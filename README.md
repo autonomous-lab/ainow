@@ -127,7 +127,7 @@ FISH_TTS_URL=http://localhost:8082  # Fish Speech TTS
 ## Project structure
 
 ```
-ainow/
+src/
   server.py             # FastAPI endpoints
   conversation.py       # Main event loop (browser voice)
   agent.py              # LLM -> TTS -> Player pipeline
@@ -141,7 +141,6 @@ ainow/
     tools.py            # Tool definitions + execution
     model_manager.py    # Launch llama-server with model configs
     local_tts.py        # Kokoro TTS (local)
-    fish_tts.py         # Fish Speech TTS (self-hosted)
     browser_player.py   # Audio playback via WebSocket
     whisper_stt.py      # Whisper STT (server-side)
 main.py                 # CLI entry point

@@ -20,10 +20,10 @@ import argparse
 import uvicorn
 from dotenv import load_dotenv
 
-from ainow.server import app
-from ainow.services.model_manager import model_manager, resolve_model_id, MODEL_ALIASES, MODELS
-from ainow.log import setup_logging, Logger, get_logger
-import ainow.server as server_module
+from src.server import app
+from src.services.model_manager import model_manager, resolve_model_id, MODEL_ALIASES, MODELS
+from src.log import setup_logging, Logger, get_logger
+import src.server as server_module
 
 # Load environment variables
 load_dotenv()
