@@ -1,0 +1,28 @@
+{
+  "name": "ainow",
+  "version": "1.0.0",
+  "description": "A conversational AI framework with voice, vision, and tool calling. Runs entirely local -- no cloud APIs required.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/autonomous-lab/ainow.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/autonomous-lab/ainow/issues"
+  },
+  "homepage": "https://github.com/autonomous-lab/ainow#readme",
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/cli": "^2.10.1"
+  }
+}

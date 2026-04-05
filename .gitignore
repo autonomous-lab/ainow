@@ -6,3 +6,6 @@ src/__pycache__/**
 .claude/
 .entire/
 notes.md
+node_modules/
+src-tauri/target/
+package-lock.json
