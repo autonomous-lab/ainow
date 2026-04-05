@@ -2,9 +2,9 @@
 FastAPI server for AINow.
 
 Endpoints:
+- GET / - Browser voice UI
 - GET /health - Health check
-- GET/POST /twiml - Returns TwiML for Twilio to connect WebSocket
-- WebSocket /ws - Media stream endpoint
+- WebSocket /ws/browser - Browser voice stream
 - GET /trace/latest - Returns the most recent call trace as JSON
 - GET /bench/ttft - Benchmark TTFT across OpenAI models
 """
@@ -22,8 +22,7 @@ from fastapi import FastAPI, WebSocket, Response, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 from openai import AsyncOpenAI
 
-from .conversation import run_conversation_over_twilio, run_conversation_over_browser
-from .services.twilio_client import make_outbound_call
+from .conversation import run_conversation_over_browser
 from .log import get_logger
 
 logger = get_logger("ainow.server")
@@ -31,7 +30,7 @@ logger = get_logger("ainow.server")
 app = FastAPI(title="AINow", docs_url=None, redoc_url=None)
 
 # ── Graceful shutdown / connection draining ───────────────────────────
-_draining = False          # Set True on SIGTERM — reject new calls
+_draining = False          # Set True on SIGTERM — reject new connections
 _active_calls = 0          # Count of live WebSocket conversations
 _drain_event = asyncio.Event()  # Signalled when _active_calls hits 0
 
@@ -56,38 +55,6 @@ async def health():
     return {"status": "ok"}
 
 
-@app.api_route("/twiml", methods=["GET", "POST"])
-async def twiml():
-    """
-    Return TwiML instructing Twilio to connect a WebSocket stream.
-    
-    Twilio calls this URL when the call is answered.
-    During graceful shutdown, rejects new calls so they don't get cut off.
-    """
-    if _draining:
-        # Reject new calls during shutdown — Twilio will play a message and hang up
-        logger.info("Draining — rejecting new inbound call")
-        reject_twiml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Sorry, we are updating. Please call back in a moment.</Say>
-    <Hangup/>
-</Response>"""
-        return Response(content=reject_twiml, media_type="application/xml")
-
-    public_url = os.getenv("TWILIO_PUBLIC_URL", "")
-    ws_url = public_url.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_url}/ws"
-    
-    twiml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect record="record-from-answer-dual">
-        <Stream url="{ws_url}" track="inbound_track" />
-    </Connect>
-</Response>"""
-    
-    return Response(content=twiml_response, media_type="application/xml")
-
-
 @app.get("/trace/latest")
 async def latest_trace():
     """Return the most recent call trace as JSON."""
@@ -101,23 +68,6 @@ async def latest_trace():
 
     data = json.loads(traces[0].read_text())
     return JSONResponse(data)
-
-
-@app.get("/call/{phone_number:path}")
-async def trigger_call(phone_number: str):
-    """
-    Initiate an outbound call.
-
-    Usage:
-        curl https://your-server/call/+1234567890
-    """
-    if not phone_number.startswith("+"):
-        phone_number = f"+{phone_number}"
-    try:
-        call_sid = make_outbound_call(phone_number)
-        return {"status": "calling", "to": phone_number, "call_sid": call_sid}
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 ## ── TTFT Benchmark ──────────────────────────────────────────────
@@ -151,7 +101,7 @@ BENCH_MESSAGES = [
 
 
 def _make_clients() -> dict:
-    """Build provider → AsyncOpenAI client map."""
+    """Build provider -> AsyncOpenAI client map."""
     clients = {}
     oai_key = os.getenv("OPENAI_API_KEY", "")
     if oai_key:
@@ -194,7 +144,7 @@ async def _measure_ttft(client: AsyncOpenAI, model: str) -> float:
         stream = await client.chat.completions.create(**params)
     except Exception as e:
         if is_new and "none" in str(e).lower():
-            # Model doesn't support "none" — retry with "minimal"
+            # Model doesn't support "none" -- retry with "minimal"
             params["extra_body"] = {"reasoning_effort": "minimal"}
             t0 = time.perf_counter()
             stream = await client.chat.completions.create(**params)
@@ -253,7 +203,7 @@ async def bench_ttft(
 
     total = len(schedule)
     names = [name for name, _, _ in model_entries]
-    logger.info(f"TTFT benchmark: {len(model_entries)} models × {runs} runs = {total} calls (randomised)")
+    logger.info(f"TTFT benchmark: {len(model_entries)} models x {runs} runs = {total} calls (randomised)")
 
     times_by_model: dict[str, list[float]] = defaultdict(list)
     errors_by_model: dict[str, list[str]] = defaultdict(list)
@@ -262,10 +212,10 @@ async def bench_ttft(
         try:
             ms = await _measure_ttft(clients[prov], mid)
             times_by_model[name].append(round(ms, 1))
-            logger.info(f"  [{idx}/{total}] {name} #{run_i+1} → {ms:.0f} ms")
+            logger.info(f"  [{idx}/{total}] {name} #{run_i+1} -> {ms:.0f} ms")
         except Exception as e:
             errors_by_model[name].append(f"run {run_i+1}: {e}")
-            logger.info(f"  [{idx}/{total}] {name} #{run_i+1} → ERROR")
+            logger.info(f"  [{idx}/{total}] {name} #{run_i+1} -> ERROR")
 
     # Aggregate stats per model (preserve original order)
     results = []
@@ -274,7 +224,7 @@ async def bench_ttft(
         errs = errors_by_model.get(name, [])
         if not t:
             results.append({"model": name, "error": errs[0] if errs else "no data"})
-            logger.info(f"  {name} → ERROR: {errs[0] if errs else 'no data'}")
+            logger.info(f"  {name} -> ERROR: {errs[0] if errs else 'no data'}")
             continue
         avg = round(sum(t) / len(t), 1)
         entry: dict = {
@@ -288,38 +238,13 @@ async def bench_ttft(
         if errs:
             entry["errors"] = errs
         results.append(entry)
-        logger.info(f"  {name} → avg {avg} ms  (min {min(t)}, max {max(t)})")
+        logger.info(f"  {name} -> avg {avg} ms  (min {min(t)}, max {max(t)})")
 
     return JSONResponse({
         "prompt": BENCH_PROMPT,
         "runs_per_model": runs,
         "results": results,
     })
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket endpoint for Twilio Media Streams.
-    
-    Handles the bidirectional audio stream for a single call.
-    Tracks active connections for graceful shutdown draining.
-    """
-    global _active_calls
-
-    await websocket.accept()
-    _active_calls += 1
-    logger.info(f"Call connected  (active: {_active_calls})")
-
-    try:
-        await run_conversation_over_twilio(websocket)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        _active_calls -= 1
-        logger.info(f"Call ended  (active: {_active_calls})")
-        if _draining and _active_calls <= 0:
-            _drain_event.set()
 
 
 @app.websocket("/ws/browser")

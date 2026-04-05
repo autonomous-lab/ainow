@@ -4,8 +4,7 @@ Pure state machine for ainow.
 The process_event function is the heart of the system:
     (State, Event) -> (State, List[Action])
 
-With Deepgram Flux handling turn detection, this is now
-a trivial conversation controller (~30 lines of logic).
+A trivial conversation controller (~30 lines of logic).
 """
 
 from dataclasses import replace
@@ -14,8 +13,8 @@ from typing import List, Tuple
 from .types import (
     AppState, Phase,
     Event, StreamStartEvent, StreamStopEvent, MediaEvent,
-    FluxStartOfTurnEvent, FluxEndOfTurnEvent, AgentTurnDoneEvent,
-    Action, FeedFluxAction, StartAgentTurnAction, ResetAgentTurnAction,
+    StartOfTurnEvent, EndOfTurnEvent, AgentTurnDoneEvent,
+    Action, FeedSTTAction, StartAgentTurnAction, ResetAgentTurnAction,
 )
 
 
@@ -23,10 +22,10 @@ def process_event(state: AppState, event: Event) -> Tuple[AppState, List[Action]
     """
     Pure state machine: (State, Event) -> (State, Actions)
 
-    With Flux, this is just a simple router:
-    - MediaEvent        -> feed audio to Flux
-    - FluxEndOfTurnEvent -> start agent response
-    - FluxStartOfTurnEvent -> interrupt (barge-in)
+    Simple router:
+    - MediaEvent        -> feed audio to STT
+    - EndOfTurnEvent    -> start agent response
+    - StartOfTurnEvent  -> interrupt (barge-in)
     - AgentTurnDoneEvent -> back to listening
     """
     if isinstance(event, StreamStartEvent):
@@ -39,9 +38,9 @@ def process_event(state: AppState, event: Event) -> Tuple[AppState, List[Action]
         return state, actions
 
     if isinstance(event, MediaEvent):
-        return state, [FeedFluxAction(audio_bytes=event.audio_bytes)]
+        return state, [FeedSTTAction(audio_bytes=event.audio_bytes)]
 
-    if isinstance(event, FluxEndOfTurnEvent):
+    if isinstance(event, EndOfTurnEvent):
         if event.transcript or event.images:
             if state.phase == Phase.RESPONDING:
                 # Interrupt current generation and start new turn
@@ -52,7 +51,7 @@ def process_event(state: AppState, event: Event) -> Tuple[AppState, List[Action]
                 return new_state, [StartAgentTurnAction(transcript=event.transcript, images=event.images)]
         return state, []
 
-    if isinstance(event, FluxStartOfTurnEvent):
+    if isinstance(event, StartOfTurnEvent):
         if state.phase == Phase.RESPONDING:
             return replace(state, phase=Phase.LISTENING), [ResetAgentTurnAction()]
         return state, []

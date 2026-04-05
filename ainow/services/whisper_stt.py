@@ -1,7 +1,7 @@
 """
 Server-side STT using Silero VAD + faster-whisper.
 
-Drop-in replacement for FluxService. Same callback interface:
+Server-side STT service. Callback interface:
 on_start_of_turn, on_end_of_turn, on_interim.
 
 Audio input: Int16 PCM at 16kHz (from browser AudioWorklet).

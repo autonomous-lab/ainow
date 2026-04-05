@@ -2,7 +2,7 @@
 Fish Speech TTS service (self-hosted).
 
 Connects to a local Fish Speech API server (openaudio-s1-mini or similar).
-Same interface as LocalTTSService / TTSService for drop-in use.
+Same interface as LocalTTSService for drop-in use.
 
 Start the Fish Speech server:
     python -m tools.api_server \

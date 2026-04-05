@@ -4,10 +4,10 @@ Agent -- self-contained LLM -> TTS -> Player pipeline.
 Encapsulates the entire agent response lifecycle.
 Owns conversation history across turns.
 
-    start_turn(transcript) -> add to history -> LLM -> TTS -> Player -> Twilio
+    start_turn(transcript) -> add to history -> LLM -> TTS -> Player -> Browser
     cancel_turn()          -> cancel all, keep history
 
-TTS connections are managed by TTSPool (see services/tts_pool.py).
+TTS connections are managed by the TTS pool (local Kokoro or Fish Speech).
 """
 
 import asyncio
@@ -17,9 +17,6 @@ from typing import Optional, Callable, Awaitable, List, Dict, Any
 from fastapi import WebSocket
 
 from .services.llm import LLMService
-from .services.tts import TTSService
-from .services.tts_pool import TTSPool
-from .services.player import AudioPlayer
 from .services.tools import TOOLS
 from .tracer import Tracer
 from .log import ServiceLogger
@@ -37,7 +34,7 @@ class Agent:
     Self-contained agent response pipeline.
 
     LLM is persistent (keeps conversation history across turns).
-    TTS connections come from TTSPool (pre-connected, with TTL eviction).
+    TTS connections come from the pool (local Kokoro or Fish Speech).
     Player is created fresh per turn.
     """
 
@@ -46,9 +43,9 @@ class Agent:
         websocket: WebSocket,
         stream_sid: str,
         on_done: Callable[[], None],
-        tts_pool: Optional[TTSPool],
+        tts_pool: Optional[Any],
         tracer: Tracer,
-        player_cls: type = AudioPlayer,
+        player_cls: Optional[type] = None,
         on_response_token: Optional[Callable[[str], Awaitable[None]]] = None,
         on_pipeline: Optional[Callable[[str, str], Awaitable[None]]] = None,
         on_tool_call: Optional[Callable[[str, Any], Awaitable[None]]] = None,
@@ -85,8 +82,8 @@ class Agent:
         )
 
         # Active per-turn services (set during start, cleared on cancel)
-        self._tts: Optional[TTSService] = None
-        self._player: Optional[AudioPlayer] = None
+        self._tts = None
+        self._player = None
         self._active = False
 
         # Current turn number (for tracer)
@@ -254,7 +251,7 @@ class Agent:
                 await self._pipeline("tts", "active", llm_ttft=llm_ms)
             else:
                 await self._pipeline("llm", "active", llm_ttft=llm_ms)
-            log.info(f"⏱  LLM first token  +{llm_ms}ms")
+            log.info(f"LLM first token  +{llm_ms}ms")
 
         if self._tts:
             # Strip markdown artifacts that TTS would read aloud
@@ -276,9 +273,9 @@ class Agent:
         if self._tts:
             await self._tts.flush()
         else:
-            # TTS muted — turn is done once LLM finishes
+            # TTS muted -- turn is done once LLM finishes
             total = _ms_since(self._t0)
-            log.info(f"⏱  Turn complete (muted)  +{total}ms total")
+            log.info(f"Turn complete (muted)  +{total}ms total")
             self._active = False
             if self._on_pipeline:
                 await self._pipeline("playing", "done", turn_total=total)
@@ -297,7 +294,7 @@ class Agent:
             ttft = _ms_since(self._t0)
             tts_latency = int((self._t_first_audio - self._t_first_token) * 1000) if self._got_first_token else 0
             await self._pipeline("playing", "active", tts_latency=tts_latency, total_ttfa=ttft)
-            log.info(f"⏱  TTS first audio  +{ttft}ms  (TTS latency {tts_latency}ms)")
+            log.info(f"TTS first audio  +{ttft}ms  (TTS latency {tts_latency}ms)")
 
         await self._player.send_chunk(audio_base64)
 
@@ -318,7 +315,7 @@ class Agent:
         self._tracer.end(self._turn, "player")
 
         total = _ms_since(self._t0)
-        log.info(f"⏱  Turn complete    +{total}ms total")
+        log.info(f"Turn complete    +{total}ms total")
 
         self._active = False
         self._tts = None

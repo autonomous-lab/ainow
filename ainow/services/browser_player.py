@@ -21,7 +21,7 @@ class BrowserPlayer:
     """
     Streams audio to a browser client over WebSocket.
 
-    Unlike AudioPlayer (Twilio), this sends raw PCM bytes as binary
+    Sends raw PCM bytes as binary
     WebSocket frames immediately — no 20ms drip needed because the
     browser's AudioContext handles scheduling.
     """
@@ -85,7 +85,7 @@ class BrowserPlayer:
             log.error("Send clear failed", e)
 
     async def start(self) -> None:
-        """Reset state for a new turn (interface compat with AudioPlayer)."""
+        """Reset state for a new turn."""
         self._running = True
         self._tts_done = False
         self._chunk_count = 0

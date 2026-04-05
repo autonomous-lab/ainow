@@ -39,31 +39,31 @@ class AppState:
 
 @dataclass(frozen=True)
 class StreamStartEvent:
-    """Twilio stream started."""
+    """Voice stream started."""
     stream_sid: str
 
 
 @dataclass(frozen=True)
 class StreamStopEvent:
-    """Twilio stream ended."""
+    """Voice stream ended."""
     pass
 
 
 @dataclass(frozen=True)
 class MediaEvent:
-    """Audio data received from Twilio."""
+    """Audio data received from client."""
     audio_bytes: bytes
 
 
 @dataclass(frozen=True)
-class FluxStartOfTurnEvent:
-    """Deepgram Flux detected user started speaking (barge-in)."""
+class StartOfTurnEvent:
+    """User started speaking (barge-in)."""
     pass
 
 
 @dataclass(frozen=True)
-class FluxEndOfTurnEvent:
-    """Deepgram Flux detected user finished speaking."""
+class EndOfTurnEvent:
+    """User finished speaking."""
     transcript: str
     images: tuple = ()  # Tuple of {data, mime} dicts for vision
 
@@ -76,7 +76,7 @@ class AgentTurnDoneEvent:
 
 Event = Union[
     StreamStartEvent, StreamStopEvent, MediaEvent,
-    FluxStartOfTurnEvent, FluxEndOfTurnEvent,
+    StartOfTurnEvent, EndOfTurnEvent,
     AgentTurnDoneEvent,
 ]
 
@@ -86,8 +86,8 @@ Event = Union[
 # =============================================================================
 
 @dataclass(frozen=True)
-class FeedFluxAction:
-    """Send audio to Deepgram Flux."""
+class FeedSTTAction:
+    """Send audio to STT service."""
     audio_bytes: bytes
 
 
@@ -100,12 +100,12 @@ class StartAgentTurnAction:
 
 @dataclass(frozen=True)
 class ResetAgentTurnAction:
-    """Cancel agent response and clear Twilio buffer."""
+    """Cancel agent response and clear audio buffer."""
     pass
 
 
 Action = Union[
-    FeedFluxAction,
+    FeedSTTAction,
     StartAgentTurnAction,
     ResetAgentTurnAction,
 ]

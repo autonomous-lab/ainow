@@ -14,10 +14,10 @@ from typing import Optional
 from .types import (
     Event,
     StreamStartEvent, StreamStopEvent, MediaEvent,
-    FluxStartOfTurnEvent, FluxEndOfTurnEvent,
+    StartOfTurnEvent, EndOfTurnEvent,
     AgentTurnDoneEvent,
     Action,
-    FeedFluxAction, StartAgentTurnAction, ResetAgentTurnAction,
+    FeedSTTAction, StartAgentTurnAction, ResetAgentTurnAction,
     Phase,
 )
 
@@ -109,7 +109,7 @@ class Logger:
     """
     Unified logger for AINow.
 
-    Class methods  -- lifecycle events (server, call, websocket, stream)
+    Class methods  -- lifecycle events (server, websocket, stream)
     Instance methods -- event/action/transition logging in the conversation loop
     """
 
@@ -124,16 +124,6 @@ class Logger:
     @classmethod
     def server_ready(cls, url: str) -> None:
         cls._logger.info(_c(C.GREEN, "\u2713  Ready") + " " + _c(C.DIM, url))
-
-    @classmethod
-    def call_initiating(cls, phone: str) -> None:
-        cls._logger.info("\U0001F4DE " + _c(C.CYAN, "Calling " + phone + "..."))
-
-    @classmethod
-    def call_initiated(cls, sid: str) -> None:
-        cls._logger.info(
-            _c(C.GREEN, "\u2713  Call initiated") + " " + _c(C.DIM, "SID: " + sid[:8] + "...")
-        )
 
     @classmethod
     def websocket_connected(cls) -> None:
@@ -173,22 +163,22 @@ class Logger:
             self._events_logger.info("\u23F9  " + _c(C.DIM, "Stream stopped"))
             return
 
-        if isinstance(event, FluxEndOfTurnEvent):
+        if isinstance(event, EndOfTurnEvent):
             text = event.transcript
             if len(text) > 60:
                 text = text[:57] + "..."
             self._events_logger.info(
                 _c(C.GREEN, "\u2190") + " " +
-                _c(C.BRIGHT_BLUE, "Flux") + " " +
+                _c(C.BRIGHT_BLUE, "STT") + " " +
                 _c(C.GREEN, "EndOfTurn") + " " +
                 _quote(text)
             )
             return
 
-        if isinstance(event, FluxStartOfTurnEvent):
+        if isinstance(event, StartOfTurnEvent):
             self._events_logger.info(
                 _c(C.BRIGHT_RED, "\u26A1") + " " +
-                _c(C.BRIGHT_BLUE, "Flux") + " " +
+                _c(C.BRIGHT_BLUE, "STT") + " " +
                 _c(C.BRIGHT_RED, "StartOfTurn") + " " +
                 _c(C.DIM, "(barge-in)")
             )
@@ -204,10 +194,10 @@ class Logger:
     def action(self, action: Action) -> None:
         """Log an outgoing action."""
 
-        if isinstance(action, FeedFluxAction):
+        if isinstance(action, FeedSTTAction):
             if self._verbose:
                 size = len(action.audio_bytes)
-                self._events_logger.debug(_c(C.DIM, "\u2192 FeedFlux (" + str(size) + " bytes)"))
+                self._events_logger.debug(_c(C.DIM, "\u2192 FeedSTT (" + str(size) + " bytes)"))
             return
 
         if isinstance(action, StartAgentTurnAction):
@@ -255,15 +245,16 @@ class Logger:
 # =============================================================================
 
 class ServiceLogger:
-    """Logger for individual services (Flux, LLM, TTS, Player, Agent)."""
+    """Logger for individual services (STT, LLM, TTS, Player, Agent)."""
 
     COLORS = {
-        "Flux": C.BRIGHT_BLUE,
+        "STT": C.BRIGHT_BLUE,
         "LLM": C.BRIGHT_MAGENTA,
         "TTS": C.BRIGHT_CYAN,
         "LocalTTS": C.BRIGHT_CYAN,
         "FishTTS": C.BRIGHT_CYAN,
         "Player": C.WHITE,
+        "BrowserPlayer": C.WHITE,
         "Agent": C.BRIGHT_GREEN,
     }
 
