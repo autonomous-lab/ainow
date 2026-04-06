@@ -8,4 +8,3 @@ src/__pycache__/**
 notes.md
 node_modules/
 src-tauri/target/
-package-lock.json
