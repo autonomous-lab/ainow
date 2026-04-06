@@ -1,21 +1,24 @@
-//! AINow Tauri application.
+//! AINow application.
 //!
-//! Integrates an Axum HTTP/WebSocket server with Tauri for
-//! a desktop AI voice assistant.
+//! With "desktop" feature: Tauri desktop app with embedded Axum server.
+//! Without: standalone Axum server only.
 
-mod agent;
-mod conversation;
-mod llm;
-mod model_manager;
-mod server;
-mod settings;
-mod state;
-mod tools;
-mod types;
+pub mod agent;
+pub mod conversation;
+pub mod llm;
+pub mod model_manager;
+pub mod server;
+pub mod settings;
+pub mod state;
+pub mod tools;
+pub mod types;
 
+#[cfg(feature = "desktop")]
 use settings::{get_settings, update_settings, Settings, SettingsState};
+#[cfg(feature = "desktop")]
 use std::sync::Mutex;
 
+#[cfg(feature = "desktop")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()

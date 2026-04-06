@@ -82,17 +82,17 @@ impl Settings {
     }
 }
 
-/// Global settings state for Tauri commands.
+#[cfg(feature = "desktop")]
 pub struct SettingsState(pub Mutex<Settings>);
 
-/// Tauri command: get current settings.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn get_settings(state: tauri::State<'_, SettingsState>) -> Result<Settings, String> {
     let settings = state.0.lock().map_err(|e| e.to_string())?;
     Ok(settings.clone())
 }
 
-/// Tauri command: update settings.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub fn update_settings(
     new_settings: Settings,
@@ -100,6 +100,6 @@ pub fn update_settings(
 ) -> Result<(), String> {
     let mut settings = state.0.lock().map_err(|e| e.to_string())?;
     *settings = new_settings;
-    settings.save().map_err(|e| e.to_string())?;
+    settings.save().map_err(|e: anyhow::Error| e.to_string())?;
     Ok(())
 }

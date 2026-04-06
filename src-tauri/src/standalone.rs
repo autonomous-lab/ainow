@@ -1,20 +1,10 @@
 //! Standalone server — runs AINow without Tauri (no desktop window).
 //!
 //! Usage:
-//!   cargo run --bin ainow-server
+//!   cargo run --bin ainow-server --no-default-features
 //!   # Open http://localhost:3040 in your browser
 
-mod agent;
-mod conversation;
-mod llm;
-mod model_manager;
-mod server;
-mod settings;
-mod state;
-mod tools;
-mod types;
-
-use settings::Settings;
+use app_lib::settings::Settings;
 
 #[tokio::main]
 async fn main() {
@@ -26,5 +16,5 @@ async fn main() {
     log::info!("AINow server starting on port {}", settings.port);
     log::info!("Open http://localhost:{}", settings.port);
 
-    server::start(settings).await;
+    app_lib::server::start(settings).await;
 }
