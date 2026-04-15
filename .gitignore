@@ -1,0 +1,16 @@
+src/__pycache__/**
+**/__pycache__/**
+**/*.pyc
+.env
+.env-test
+.claude/
+.entire/
+notes.md
+.ainow/
+agents/
+
+# TurboQuant build artifacts
+.llama-build/
+llama-server-turboquant/
+llama-server-mainline/
+.llama-mainline/

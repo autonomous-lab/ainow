@@ -1,0 +1,21 @@
+{
+  "name": "memory-db",
+  "version": "1.0.0",
+  "description": "Persistent memory with SQLite and semantic vector search",
+  "type": "module",
+  "main": "memory.js",
+  "bin": {
+    "memory-db": "./cli.js"
+  },
+  "scripts": {
+    "test": "node cli.js stats"
+  },
+  "keywords": ["memory", "sqlite", "vector", "embeddings", "semantic-search"],
+  "author": "Joseph Benguira",
+  "license": "MIT",
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "better-sqlite3": "^12.5.0",
+    "sqlite-vec": "^0.1.6"
+  }
+}
