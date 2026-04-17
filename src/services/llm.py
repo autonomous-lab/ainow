@@ -642,7 +642,13 @@ class LLMService:
             "Only a real `bash` tool call actually runs the command.\n"
             "To read files, use the `read` tool — NOT `bash cat`. "
             "To write/edit files, use `write`/`edit` — NOT `bash echo >` or `bash sed`. "
-            "The native file tools are faster, safer, and show line numbers."
+            "The native file tools are faster, safer, and show line numbers.\n"
+            "## RESERVED PORTS — DO NOT BIND\n"
+            "Port **8080** is reserved for the local LLM (llama-server) that powers you. "
+            "NEVER start a dev/HTTP server on 8080 (`python -m http.server 8080`, `npx serve -p 8080`, etc.). "
+            "Doing so kills your own LLM connection mid-turn. "
+            "Use 3000, 5000, 8000, or 8888 for user-facing dev servers. "
+            "Port 3040 is also reserved for this AINow server itself."
         )
 
         parts.append(
@@ -774,6 +780,19 @@ class LLMService:
                     })
                 else:
                     messages.append({"role": "system", "content": system_prompt})
+            # Decide whether the current model can handle image_url blocks.
+            # If not, strip them from history before sending — otherwise
+            # llama-server returns 500 on multimodal requests without mmproj.
+            from .model_manager import model_manager as _mm, MODELS as _MODELS
+            _cfg = _MODELS.get(_mm.current_model or "", {})
+            _mmproj_path = _cfg.get("mmproj") or ""
+            _has_mmproj = bool(_mmproj_path) and os.path.isfile(_mmproj_path)
+            _model_name_lc = (_cfg.get("model", "") or _cfg.get("model_id", "") or "").lower()
+            _is_online_vision = bool(_cfg.get("online")) and any(
+                k in _model_name_lc for k in ("gemini", "gpt-4", "claude", "llama-4", "pixtral", "qwen-vl")
+            )
+            _can_see_images = (_mm.vision_enabled and _has_mmproj) or _is_online_vision
+
             # Filter out "thinking" entries and sanitize media formats
             for m in self._history:
                 if m.get("role") == "thinking":
@@ -790,6 +809,9 @@ class LLMService:
                                 mime_part = url.split(";")[0].split("/")[-1]
                                 fmt = mime_part.replace("mpeg", "mp3").replace("x-wav", "wav")
                                 fixed.append({"type": "input_audio", "input_audio": {"data": b64, "format": fmt}})
+                                continue
+                            if not _can_see_images and url.startswith("data:image/"):
+                                fixed.append({"type": "text", "text": "[image omitted: current model has no vision adapter]"})
                                 continue
                         fixed.append(block)
                     messages.append({**m, "content": fixed})
@@ -821,9 +843,8 @@ class LLMService:
                 from .tools import get_tool_schemas
                 current_tools = get_tool_schemas() if self._tools is not None else None
 
-                # Thinking mode consumes extra tokens for reasoning, so allow more.
                 from .model_manager import model_manager
-                max_tok = 8000 if model_manager.thinking_enabled else 2000
+                max_tok = 32000
                 create_kwargs = dict(
                     model=self._model,
                     messages=messages,

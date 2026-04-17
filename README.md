@@ -55,7 +55,10 @@ You can also switch models from the UI dropdown at runtime — no restart needed
 | `-m 2b` | Qwen 3.5 2B Q4_K_M | ~1.5 GB | Budget GPU |
 | `-m 4b` | Qwen 3.5 4B Q4_K_M | ~2.8 GB | Good for 8 GB VRAM |
 | `-m 9b` | Qwen 3.5 9B UD-Q4_K_XL | ~6 GB | **Default**, best balance |
-| `-m 27b` | Qwen 3.5 27B UD-IQ3_XXS | ~11 GB | Highest quality |
+| `-m 27b` | Qwen 3.5 27B UD-IQ3_XXS | ~11 GB | Highest quality dense |
+| `-m 35b` | Qwen 3.6 35B A3B UD-Q2_K_XL | ~13 GB | MoE, 3B active — fast for its size |
+| `-m 35b-iq1` | Qwen 3.6 35B A3B UD-IQ1_M | ~10 GB | MoE, smaller quant — fits 16 GB VRAM |
+| `-m 35b-agg` | Qwen 3.6 35B Aggressive IQ2_M (uncensored) | ~12 GB | MoE + vision mmproj (HauhauCS) |
 | `-m gemma` | Gemma 4 E4B Aggressive (uncensored) | ~5 GB | Custom — set `MODEL_GEMMA` |
 | `-m heretic` | Gemma 4 26B Heretic (uncensored) | ~13 GB | Custom — set `MODEL_HERETIC` + `_CTX` + `_NGL` |
 | `-m online` | Any OpenAI-compatible API | 0 GB | Cloud, needs API key |
@@ -129,7 +132,7 @@ Browser STT/TTS works fine but has limitations: Chrome's Web Speech API occasion
 |------|-------------|---------|
 | 8 GB | Gemma 4 E4B | `python main.py -m gemma` |
 | 16 GB | Gemma 4 26B Heretic | `python main.py -m heretic` |
-| 24 GB | Qwen 27B | `python main.py -m 27b` |
+| 24 GB | Qwen 27B or Qwen 3.6 35B A3B | `python main.py -m 27b` / `-m 35b` |
 | No GPU | Gemma 31B free (OpenRouter) | `python main.py -m online2` |
 
 ## Agents

@@ -466,9 +466,25 @@ def _find_bash() -> Optional[str]:
     return _BASH_EXE or None
 
 
+_RESERVED_PORT_PATTERNS = [
+    re.compile(r"\b(?:-p|--port|PORT=|port=|port\s+|:)8080\b", re.IGNORECASE),
+    re.compile(r"\bhttp\.server\s+8080\b", re.IGNORECASE),
+    re.compile(r"\b(?:-p|--port|PORT=|port=|port\s+|:)3040\b", re.IGNORECASE),
+    re.compile(r"\bhttp\.server\s+3040\b", re.IGNORECASE),
+]
+
+
 async def _tool_bash(args: dict, cwd: str) -> str:
     command = args["command"]
     timeout = args.get("timeout", 30)
+
+    for pat in _RESERVED_PORT_PATTERNS:
+        if pat.search(command):
+            return (
+                "Error: This command binds to a reserved port (8080 = llama-server, "
+                "3040 = AINow). Binding here will kill your own LLM connection. "
+                "Use 3000, 5000, 8000, or 8888 instead."
+            )
 
     try:
         # On Windows, create_subprocess_shell uses cmd.exe which mishandles

@@ -35,6 +35,9 @@ MODEL_ALIASES = {
     "4b": "qwen3.5-4b",
     "9b": "qwen3.5-9b",
     "27b": "qwen3.5-27b",
+    "35b": "qwen3.6-35b",
+    "35b-iq1": "qwen3.6-35b-iq1",
+    "35b-agg": "qwen3.6-35b-agg",
     "online": "online",
     "online2": "online2",
 }
@@ -82,6 +85,31 @@ def _build_models():
             "hf_files": ["Qwen3.5-27B-UD-IQ3_XXS.gguf", "mmproj-BF16.gguf"],
             "model": _model_path("Qwen3.5-27B-GGUF", "Qwen3.5-27B-UD-IQ3_XXS.gguf"),
             "mmproj": _model_path("Qwen3.5-27B-GGUF", "mmproj-BF16.gguf"),
+            "ctx": "32768",
+        },
+        "qwen3.6-35b": {
+            "name": "Qwen 3.6 35B A3B (Q2)",
+            "hf_repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+            "hf_files": ["Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"],
+            "model": _model_path("Qwen3.6-35B-A3B-GGUF", "Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"),
+            "ctx": "32768",
+        },
+        "qwen3.6-35b-iq1": {
+            "name": "Qwen 3.6 35B A3B (IQ1)",
+            "hf_repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+            "hf_files": ["Qwen3.6-35B-A3B-UD-IQ1_M.gguf"],
+            "model": _model_path("Qwen3.6-35B-A3B-GGUF", "Qwen3.6-35B-A3B-UD-IQ1_M.gguf"),
+            "ctx": "32768",
+        },
+        "qwen3.6-35b-agg": {
+            "name": "Qwen 3.6 35B Aggressive (uncensored, IQ2)",
+            "hf_repo": "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive",
+            "hf_files": [
+                "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ2_M.gguf",
+                "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf",
+            ],
+            "model": _model_path("Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive", "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ2_M.gguf"),
+            "mmproj": _model_path("Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive", "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"),
             "ctx": "32768",
         },
         "online": {
