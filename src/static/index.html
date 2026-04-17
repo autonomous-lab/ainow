@@ -1366,6 +1366,12 @@
   }
 
   .input-send-btn:hover { background: var(--accent-hover); }
+  .input-send-btn:disabled,
+  .input-send-btn[disabled] {
+    background: var(--border, #444);
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
 
   .input-send-btn svg {
     width: 16px;
@@ -3224,6 +3230,7 @@ async function connect() {
       label.textContent = "Disconnect";
       btn.classList.add("connected");
       updateUI("connected", "Connected", "");
+      updateSendBtnState();
       // Tell server which conversation we're in
       if (activeConversationId) {
         ws.send(JSON.stringify({ type: "set_session_id", session_id: activeConversationId }));
@@ -3718,6 +3725,7 @@ function stopWaveform() {
 
 function disconnect() {
   connected = false;
+  updateSendBtnState();
   updateMicStatus();
 
   stopVAD();
@@ -5297,8 +5305,30 @@ function openFileRef(filePath, line) {
 
 // ── Text Input ──────────────────────────────────────────────────
 
+let modelReady = false;
+function updateSendBtnState() {
+  const sendBtn = document.getElementById("sendBtn");
+  const chatInput = document.getElementById("chatInput");
+  if (!sendBtn || !chatInput) return;
+  const loadingEl = document.getElementById("modelLoading");
+  const isLoading = loadingEl && loadingEl.style.display !== "none";
+  const ready = connected && modelReady && !isLoading;
+  sendBtn.disabled = !ready;
+  chatInput.disabled = !ready;
+  if (!connected) {
+    chatInput.placeholder = "Connect first to start chatting…";
+  } else if (isLoading) {
+    chatInput.placeholder = "Model is loading…";
+  } else if (!modelReady) {
+    chatInput.placeholder = "No model loaded — pick one from the dropdown";
+  } else {
+    chatInput.placeholder = "Type a message...";
+  }
+}
+
 function sendTextMessage() {
   const input = document.getElementById("chatInput");
+  if (!connected || !modelReady) return;
   const text = input.value.trim();
   const images = pendingImages.slice();
   if (!text && images.length === 0) return;
@@ -5400,6 +5430,8 @@ async function loadModelPicker() {
     if (ejectBtn) {
       ejectBtn.style.display = (current && !current.online) ? "" : "none";
     }
+    modelReady = !!current;
+    updateSendBtnState();
   } catch(e) {}
 }
 
@@ -5450,6 +5482,7 @@ async function _postRuntimeSettings(patch, loadingLabel) {
   const loadingEl = document.getElementById("modelLoading");
   loadingEl.style.display = "";
   loadingEl.textContent = loadingLabel;
+  updateSendBtnState();
   try {
     const resp = await fetch("/api/runtime/settings", {
       method: "POST",
@@ -5460,6 +5493,7 @@ async function _postRuntimeSettings(patch, loadingLabel) {
     if (data.error) {
       alert("Failed: " + data.error);
       loadingEl.style.display = "none";
+      updateSendBtnState();
       return null;
     }
     loadingEl.textContent = "Reloaded";
@@ -5467,11 +5501,15 @@ async function _postRuntimeSettings(patch, loadingLabel) {
       ws.send(JSON.stringify({ type: "switch_model" }));
     }
     loadModelPicker();
-    setTimeout(() => { loadingEl.style.display = "none"; }, 2000);
+    setTimeout(() => {
+      loadingEl.style.display = "none";
+      updateSendBtnState();
+    }, 2000);
     return data;
   } catch (e) {
     alert("Failed: " + e.message);
     loadingEl.style.display = "none";
+    updateSendBtnState();
     return null;
   }
 }
@@ -5529,11 +5567,12 @@ async function ejectModel() {
       // Deselect model in picker
       const sel = document.getElementById("modelPicker");
       sel.value = "";
+      modelReady = false;
     }
   } catch(e) {
     loadingEl.textContent = "Eject failed";
   }
-  setTimeout(() => { loadingEl.style.display = "none"; }, 2000);
+  setTimeout(() => { loadingEl.style.display = "none"; updateSendBtnState(); }, 2000);
 }
 
 async function switchModel(alias) {
@@ -5546,6 +5585,8 @@ async function switchModel(alias) {
   const loadingEl = document.getElementById("modelLoading");
   loadingEl.style.display = "";
   loadingEl.textContent = "Loading model...";
+  modelReady = false;
+  updateSendBtnState();
 
   try {
     const resp = await fetch(`/api/models/${alias}`, { method: "POST" });
@@ -5553,7 +5594,7 @@ async function switchModel(alias) {
 
     if (data.error) {
       loadingEl.textContent = "Error: " + data.error;
-      setTimeout(() => loadingEl.style.display = "none", 3000);
+      setTimeout(() => { loadingEl.style.display = "none"; updateSendBtnState(); }, 3000);
       sel.disabled = false;
       return;
     }
@@ -5565,18 +5606,18 @@ async function switchModel(alias) {
     loadingEl.textContent = data.online
       ? "Switched to " + (data.name || alias)
       : "Loaded: " + (data.name || alias);
-    setTimeout(() => loadingEl.style.display = "none", 2000);
+    setTimeout(() => { loadingEl.style.display = "none"; updateSendBtnState(); }, 2000);
     // Refresh vision toggle for the newly-active model
     loadModelPicker();
   } catch(e) {
     loadingEl.textContent = "Switch failed";
-    setTimeout(() => loadingEl.style.display = "none", 3000);
+    setTimeout(() => { loadingEl.style.display = "none"; updateSendBtnState(); }, 3000);
   }
   sel.disabled = false;
 }
 
 // Load models on page load
-document.addEventListener("DOMContentLoaded", loadModelPicker);
+document.addEventListener("DOMContentLoaded", () => { updateSendBtnState(); loadModelPicker(); });
 
 async function toggleMicMute() {
   userMicMuted = !userMicMuted;
