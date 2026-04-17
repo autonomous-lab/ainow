@@ -16,14 +16,16 @@ import asyncio
 import random
 from collections import defaultdict
 from pathlib import Path
+import tempfile
 from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket, Response, Query, Body, UploadFile, File
+from fastapi import FastAPI, WebSocket, Response, Query, Body, UploadFile, File, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI
 
 from .conversation import run_conversation_over_browser
+from .path_security import is_within_base, resolve_within_base
 from .log import get_logger
 from .services import agents as agent_store
 from .services.scheduler import scheduler_service, is_valid_schedule, next_fire_times
@@ -74,6 +76,50 @@ app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 _draining = False          # Set True on SIGTERM — reject new connections
 _active_calls = 0          # Count of live WebSocket conversations
 _drain_event = asyncio.Event()  # Signalled when _active_calls hits 0
+
+_ADMIN_HEADER = "x-ainow-admin-token"
+_TRACE_DIR = Path(os.getenv("AINOW_TRACE_DIR", str(Path(tempfile.gettempdir()) / "ainow")))
+
+
+def _resolve_agent_path(agent_name: str, rel_path: str) -> Path:
+    base = Path(agent_store.agent_dir(agent_name)).resolve()
+    return resolve_within_base(base, rel_path)
+
+
+def _client_host(request: Request) -> str:
+    client = getattr(request, "client", None)
+    return getattr(client, "host", "") or ""
+
+
+def _has_admin_access(request: Request) -> bool:
+    host = _client_host(request)
+    if host in {"127.0.0.1", "::1", "localhost"}:
+        return True
+    token = os.getenv("AINOW_ADMIN_TOKEN", "").strip()
+    if token and request.headers.get(_ADMIN_HEADER, "") == token:
+        return True
+    return False
+
+
+def _require_admin(request: Request) -> Optional[JSONResponse]:
+    if _has_admin_access(request):
+        return None
+    return JSONResponse(
+        {
+            "error": "admin access required",
+            "hint": f"Use localhost or send {_ADMIN_HEADER} matching AINOW_ADMIN_TOKEN.",
+        },
+        status_code=403,
+    )
+
+
+def _require_debug_routes(request: Request) -> Optional[JSONResponse]:
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+    if os.getenv("AINOW_ENABLE_DEBUG_ROUTES") == "1":
+        return None
+    return JSONResponse({"error": "debug routes are disabled"}, status_code=404)
 
 
 @app.get("/")
@@ -166,9 +212,9 @@ async def file_tree(path: str = Query("")):
     """List directory contents relative to the active agent's cwd."""
     agent_name = agent_store.get_active()
     base = Path(agent_store.agent_dir(agent_name)).resolve()
-    target = (base / path).resolve()
-    # Security: must stay within base
-    if not str(target).startswith(str(base)):
+    try:
+        target = _resolve_agent_path(agent_name, path)
+    except PermissionError:
         return JSONResponse({"error": "access denied"}, status_code=403)
     if not target.exists():
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -197,8 +243,9 @@ async def file_read(path: str = Query(...)):
     """Read a file relative to the active agent's cwd. Returns content + metadata."""
     agent_name = agent_store.get_active()
     base = Path(agent_store.agent_dir(agent_name)).resolve()
-    target = (base / path).resolve()
-    if not str(target).startswith(str(base)):
+    try:
+        target = _resolve_agent_path(agent_name, path)
+    except PermissionError:
         return JSONResponse({"error": "access denied"}, status_code=403)
     if not target.exists():
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -237,8 +284,9 @@ async def file_raw(path: str = Query(...)):
     import mimetypes
     agent_name = agent_store.get_active()
     base = Path(agent_store.agent_dir(agent_name)).resolve()
-    target = (base / path).resolve()
-    if not str(target).startswith(str(base)):
+    try:
+        target = _resolve_agent_path(agent_name, path)
+    except PermissionError:
         return JSONResponse({"error": "access denied"}, status_code=403)
     if not target.exists() or not target.is_file():
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -270,11 +318,11 @@ async def generate_session_title(session_id: str, payload: dict = Body(...)):
 
     try:
         from openai import AsyncOpenAI as _OAI
-        base_url = os.getenv("OPENAI_BASE_URL", "http://localhost:8080/v1")
-        api_key = os.getenv("OPENAI_API_KEY", "not-needed")
+        base_url = os.getenv("LLM_BASE_URL", f"http://localhost:{os.getenv('LLAMA_SERVER_PORT', '8080')}/v1")
+        api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", "not-needed"))
         client = _OAI(base_url=base_url, api_key=api_key)
         resp = await client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "local"),
+            model=os.getenv("LLM_MODEL", "local"),
             messages=[{
                 "role": "user",
                 "content": f"Generate a very short title (3-6 words, no quotes, no punctuation at the end) for a conversation that starts with this message:\n\n{message[:300]}",
@@ -397,7 +445,7 @@ async def export_agent(name: str):
     buf.seek(0)
     from datetime import datetime
     ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    filename = f"employee-export-{name}-{ts}.tar.gz"
+    filename = f"agent-export-{name}-{ts}.tar.gz"
     return StreamingResponse(
         buf,
         media_type="application/gzip",
@@ -406,12 +454,16 @@ async def export_agent(name: str):
 
 
 @app.post("/api/agents/import")
-async def import_agent(file: UploadFile = File(...)):
+async def import_agent(request: Request, file: UploadFile = File(...)):
     """Import an agent from a tar.gz archive.
 
     The archive must contain a single top-level directory (the agent name).
     If the agent already exists, its files are merged (new files overwrite).
     """
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+
     import io, tarfile
     if not file.filename or not file.filename.endswith((".tar.gz", ".tgz")):
         return JSONResponse({"error": "file must be a .tar.gz"}, status_code=400)
@@ -456,7 +508,10 @@ async def import_agent(file: UploadFile = File(...)):
         rel = os.path.relpath(m.name.replace("\\", "/"), agent_name)
         if rel.startswith(".."):
             continue
-        target = dest / rel
+        try:
+            target = resolve_within_base(dest, rel)
+        except PermissionError:
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             f = tar.extractfile(m)
@@ -671,8 +726,12 @@ async def list_models():
 
 
 @app.get("/api/runtime")
-async def get_runtime():
+async def get_runtime(request: Request):
     """Return the current runtime state."""
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+
     from .services.model_manager import model_manager
     return {
         "current_model": model_manager.current_model,
@@ -683,13 +742,17 @@ async def get_runtime():
 
 
 @app.post("/api/runtime/settings")
-async def set_runtime_settings(payload: dict = Body(...)):
+async def set_runtime_settings(request: Request, payload: dict = Body(...)):
     """Update runtime settings (vision, ctx) for the active local model.
 
     Body: { "vision_enabled"?: bool, "ctx"?: int }
     Only provided fields are updated. Changes are persisted to the active
     agent's preferences and trigger ONE llama-server reload.
     """
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+
     from .services.model_manager import model_manager, MODELS
     model_id = model_manager.current_model
     if not model_id:
@@ -763,8 +826,12 @@ async def set_runtime_settings(payload: dict = Body(...)):
 
 
 @app.post("/api/eject-model")
-async def eject_model():
+async def eject_model(request: Request):
     """Eject the current model — stop llama-server and free VRAM."""
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+
     from .services.model_manager import model_manager
     try:
         import asyncio
@@ -775,8 +842,12 @@ async def eject_model():
 
 
 @app.post("/api/models/{alias}")
-async def switch_model(alias: str):
+async def switch_model(alias: str, request: Request):
     """Switch to a different local model (restarts llama-server)."""
+    deny = _require_admin(request)
+    if deny is not None:
+        return deny
+
     from .services.model_manager import resolve_model_id, MODELS, model_manager
     try:
         model_id = resolve_model_id(alias)
@@ -845,8 +916,12 @@ async def switch_model(alias: str):
 
 
 @app.get("/api/test-thinking")
-async def test_thinking():
+async def test_thinking(request: Request):
     """Debug: test reasoning capture inside the actual server process."""
+    deny = _require_debug_routes(request)
+    if deny is not None:
+        return deny
+
     from openai import AsyncOpenAI
     client = AsyncOpenAI(base_url="http://localhost:8080/v1", api_key="x")
     rc = 0; cc = 0
@@ -871,9 +946,13 @@ async def health():
 
 
 @app.get("/trace/latest")
-async def latest_trace():
+async def latest_trace(request: Request):
     """Return the most recent call trace as JSON."""
-    trace_dir = Path("/tmp/ainow")
+    deny = _require_debug_routes(request)
+    if deny is not None:
+        return deny
+
+    trace_dir = _TRACE_DIR
     if not trace_dir.exists():
         return JSONResponse({"error": "No traces found"}, status_code=404)
 
@@ -978,6 +1057,7 @@ async def _measure_ttft(client: AsyncOpenAI, model: str) -> float:
 
 @app.get("/bench/ttft")
 async def bench_ttft(
+    request: Request,
     models: Optional[str] = Query(
         None,
         description="Comma-separated model names. Defaults to a built-in list.",
@@ -991,6 +1071,10 @@ async def bench_ttft(
         curl https://your-server/bench/ttft
         curl https://your-server/bench/ttft?models=gpt-4o-mini,gpt-4o&runs=5
     """
+    deny = _require_debug_routes(request)
+    if deny is not None:
+        return deny
+
     clients = _make_clients()
 
     # Build model list: use DEFAULT_MODELS or parse comma-separated overrides
@@ -1070,6 +1154,10 @@ async def browser_websocket_endpoint(websocket: WebSocket):
     Handles bidirectional audio: binary frames (PCM linear16 @ 16kHz).
     """
     global _active_calls
+
+    if _draining:
+        await websocket.close(code=status.WS_1013_TRY_AGAIN_LATER, reason="Server draining")
+        return
 
     await websocket.accept()
     _active_calls += 1

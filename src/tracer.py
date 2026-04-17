@@ -14,7 +14,9 @@ Usage:
 """
 
 import json
+import os
 import time
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field, asdict
@@ -23,7 +25,7 @@ from .log import get_logger
 
 logger = get_logger("ainow.tracer")
 
-TRACE_DIR = Path("/tmp/ainow")
+TRACE_DIR = Path(os.getenv("AINOW_TRACE_DIR", str(Path(tempfile.gettempdir()) / "ainow")))
 
 
 @dataclass
@@ -114,7 +116,7 @@ class Tracer:
                 span.end_ms = ms
 
     def save(self, call_id: str) -> Optional[Path]:
-        """Write trace data to /tmp/ainow/<call_id>.json."""
+        """Write trace data to the configured trace directory."""
         if not self._turns:
             return None
 

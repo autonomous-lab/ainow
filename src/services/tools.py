@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional, Callable, Awaitable, Dict, Any
 
 from ..log import ServiceLogger
+from ..path_security import resolve_within_base
 
 log = ServiceLogger("Tools")
 
@@ -132,11 +133,8 @@ def truncate_output(result: str, max_chars: int = MAX_TOOL_OUTPUT) -> str:
 # Path helpers
 # ---------------------------------------------------------------------------
 def _resolve(path: str, cwd: str) -> str:
-    """Resolve a path relative to cwd."""
-    p = Path(path)
-    if not p.is_absolute():
-        p = Path(cwd) / p
-    return str(p.resolve())
+    """Resolve a path relative to cwd and keep it sandboxed to that tree."""
+    return str(resolve_within_base(Path(cwd).resolve(), path))
 
 
 # ---------------------------------------------------------------------------

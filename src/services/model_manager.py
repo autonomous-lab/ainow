@@ -189,6 +189,11 @@ MODELS = _build_models()
 # for 3.8-6.4x compression. Falls back to q4_0 on mainline llama-server.
 KV_CACHE_TYPE = os.getenv("KV_CACHE_TYPE", "turbo3")
 
+def _should_load_mmproj(config: dict, vision_enabled: bool) -> bool:
+    """Load mmproj only when needed for vision or audio-LLM input."""
+    return bool(config.get("mmproj")) and (vision_enabled or bool(os.getenv("AUDIO_LLM")))
+
+
 COMMON_ARGS = [
     "-c", "262144",
     "-np", "1",
@@ -555,10 +560,8 @@ class ModelManager:
 
         # Start new server
         cmd = [LLAMA_SERVER_EXE, "-m", config["model"]]
-        # Always load mmproj if available — it contains both vision AND audio
-        # encoders. The vision_enabled flag controls UI-level image features,
-        # but the mmproj must be loaded for audio support regardless.
-        if config.get("mmproj"):
+        # Load mmproj only when vision is enabled or audio-LLM mode needs it.
+        if _should_load_mmproj(config, vision_enabled):
             cmd += ["--mmproj", config["mmproj"]]
         cmd += COMMON_ARGS
         # Context size priority: explicit override > per-model env > global default
