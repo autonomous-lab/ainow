@@ -48,6 +48,7 @@ _CD_SKILLS_PREFIX_RE = re.compile(
     r"^cd\s+(?:\./)?\.skills(?:/[\w\-./]+)?\s*&&\s*",
     re.IGNORECASE,
 )
+_MAX_BASH_TIMEOUT = 300
 
 
 def is_safe_bash(command: str) -> bool:
@@ -201,7 +202,7 @@ async def _tool_read(args: dict, cwd: str) -> str:
                 f"The read tool only handles text files."
             )
     except Exception:
-        pass
+        log.debug(f"Could not inspect file header for binary detection: {path}")
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
@@ -473,8 +474,20 @@ _RESERVED_PORT_PATTERNS = [
 
 
 async def _tool_bash(args: dict, cwd: str) -> str:
-    command = args["command"]
-    timeout = args.get("timeout", 30)
+    command = args.get("command")
+    if not isinstance(command, str):
+        return "Error: command must be a string"
+    command = command.strip()
+    if not command:
+        return "Error: command cannot be empty"
+    try:
+        timeout = int(args.get("timeout", 30))
+    except (TypeError, ValueError):
+        return "Error: timeout must be an integer"
+    if timeout < 1:
+        return "Error: timeout must be greater than 0"
+    if timeout > _MAX_BASH_TIMEOUT:
+        timeout = _MAX_BASH_TIMEOUT
 
     for pat in _RESERVED_PORT_PATTERNS:
         if pat.search(command):
@@ -488,7 +501,7 @@ async def _tool_bash(args: dict, cwd: str) -> str:
         # On Windows, create_subprocess_shell uses cmd.exe which mishandles
         # POSIX-style quotes and pipes (e.g. tree -I 'a|b'). Route through
         # bash.exe (Git Bash) when available so the model can write portable
-        # bash commands.
+        # bash commands including pipes, redirects, and command chains.
         if os.name == "nt":
             bash = _find_bash()
             if bash:
@@ -522,7 +535,7 @@ async def _tool_bash(args: dict, cwd: str) -> str:
         try:
             proc.kill()
         except Exception:
-            pass
+            log.error("Failed to kill timed-out bash process")
         return f"Error: Command timed out after {timeout}s"
 
 

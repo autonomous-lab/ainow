@@ -14,6 +14,7 @@ import os
 import time
 import asyncio
 import random
+import re
 from collections import defaultdict
 from pathlib import Path
 import tempfile
@@ -32,7 +33,24 @@ from .services.scheduler import scheduler_service, is_valid_schedule, next_fire_
 
 logger = get_logger("ainow.server")
 
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
 app = FastAPI(title="AINow", docs_url=None, redoc_url=None)
+
+
+def _require_object_payload(payload, field_name: str = "payload"):
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": f"{field_name} must be a JSON object"}, status_code=400)
+    return None
+
+
+def _safe_session_id(value: str) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    sid = value.strip()
+    if not sid or not _SESSION_ID_RE.fullmatch(sid):
+        return None
+    return sid
 
 
 @app.on_event("startup")
@@ -150,13 +168,25 @@ async def list_sessions():
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
-    path = agent_store.sessions_dir(agent_store.get_active()) / f"{session_id}.json"
+    sid = _safe_session_id(session_id)
+    if sid is None:
+        return JSONResponse({"error": "invalid session_id"}, status_code=400)
+    path = agent_store.sessions_dir(agent_store.get_active()) / f"{sid}.json"
     if not path.exists():
         return JSONResponse({"error": "not found"}, status_code=404)
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.error(f"Failed reading session file {path}: {e}")
+        return JSONResponse({"error": "invalid session file"}, status_code=500)
+    if not isinstance(data, dict):
+        return JSONResponse({"error": "invalid session payload"}, status_code=500)
     messages = []
     raw_msgs = data.get("messages", [])
+    if not isinstance(raw_msgs, list):
+        logger.warning(f"Invalid session messages in {path}: expected list")
+        raw_msgs = []
     # Pre-index tool results by tool_call_id so we can attach them to the
     # corresponding assistant tool_call entries.
     tool_results = {}
@@ -198,7 +228,10 @@ async def get_session(session_id: str):
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
-    path = agent_store.sessions_dir(agent_store.get_active()) / f"{session_id}.json"
+    sid = _safe_session_id(session_id)
+    if sid is None:
+        return JSONResponse({"error": "invalid session_id"}, status_code=400)
+    path = agent_store.sessions_dir(agent_store.get_active()) / f"{sid}.json"
     if path.exists():
         path.unlink()
         return {"deleted": True}
@@ -297,21 +330,39 @@ async def file_raw(path: str = Query(...)):
 @app.post("/api/sessions/{session_id}/title")
 async def generate_session_title(session_id: str, payload: dict = Body(...)):
     """Generate an AI title for a session, or set one manually."""
-    path = agent_store.sessions_dir(agent_store.get_active()) / f"{session_id}.json"
+    bad_payload = _require_object_payload(payload, "payload")
+    if bad_payload is not None:
+        return bad_payload
+    sid = _safe_session_id(session_id)
+    if sid is None:
+        return JSONResponse({"error": "invalid session_id"}, status_code=400)
+    path = agent_store.sessions_dir(agent_store.get_active()) / f"{sid}.json"
     if not path.exists():
         return JSONResponse({"error": "not found"}, status_code=404)
+    if "title" in payload and not isinstance(payload.get("title"), str):
+        return JSONResponse({"error": "title must be a string"}, status_code=400)
 
     manual_title = (payload.get("title") or "").strip()
     if manual_title:
         # Manual title set
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            return JSONResponse({"error": f"failed to read session: {e}"}, status_code=500)
+        if not isinstance(data, dict):
+            return JSONResponse({"error": "invalid session payload"}, status_code=500)
         data["title"] = manual_title
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return JSONResponse({"error": f"failed to write session: {e}"}, status_code=500)
         return {"title": manual_title}
 
     # Auto-generate from first user message using LLM
+    if "message" not in payload or not isinstance(payload.get("message"), str):
+        return JSONResponse({"error": "message is required and must be a string"}, status_code=400)
     message = (payload.get("message") or "").strip()
     if not message:
         return JSONResponse({"error": "no message"}, status_code=400)
@@ -340,11 +391,13 @@ async def generate_session_title(session_id: str, payload: dict = Body(...)):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            return JSONResponse({"error": "invalid session payload"}, status_code=500)
         data["title"] = title
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Failed saving generated title for {sid}: {e}")
 
     return {"title": title}
 
@@ -359,6 +412,9 @@ async def list_agents():
 
 @app.post("/api/agents")
 async def create_agent(payload: dict = Body(...)):
+    bad_payload = _require_object_payload(payload, "payload")
+    if bad_payload is not None:
+        return bad_payload
     name = (payload.get("name") or "").strip()
     claude_md = payload.get("claude_md", "")
     try:
@@ -382,6 +438,9 @@ async def get_agent(name: str):
 
 @app.put("/api/agents/{name}")
 async def update_agent(name: str, payload: dict = Body(...)):
+    bad_payload = _require_object_payload(payload, "payload")
+    if bad_payload is not None:
+        return bad_payload
     if not agent_store.exists(name):
         return JSONResponse({"error": "not found"}, status_code=404)
     try:
@@ -421,12 +480,20 @@ async def activate_agent(name: str):
 _EXPORT_EXCLUDE = {"sessions", "scheduled_tasks.json", "node_modules",
                    ".cache", "__pycache__", ".task-scheduler.pid",
                    ".task-scheduler.log", ".task-scheduler-data.json"}
+_MAX_IMPORT_ARCHIVE_BYTES = 64 * 1024 * 1024  # 64 MB
+_MAX_IMPORT_MEMBERS = 2000
+_MAX_MEMBER_PATH_LEN = 260
+_MAX_MEMBER_FILE_BYTES = 5 * 1024 * 1024  # 5 MB per file
 
 
 @app.get("/api/agents/{name}/export")
 async def export_agent(name: str):
     """Download an agent as a tar.gz archive."""
     import io, tarfile
+    try:
+        agent_store._validate_name(name)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     if not agent_store.exists(name):
         return JSONResponse({"error": "agent not found"}, status_code=404)
 
@@ -440,6 +507,8 @@ async def export_agent(name: str):
                 if f in _EXPORT_EXCLUDE:
                     continue
                 full = os.path.join(root, f)
+                if os.path.islink(full):
+                    continue
                 arcname = os.path.join(name, os.path.relpath(full, str(agent_dir)))
                 tar.add(full, arcname=arcname)
     buf.seek(0)
@@ -464,91 +533,133 @@ async def import_agent(request: Request, file: UploadFile = File(...)):
     if deny is not None:
         return deny
 
-    import io, tarfile
+    import io, tarfile, posixpath
     if not file.filename or not file.filename.endswith((".tar.gz", ".tgz")):
         return JSONResponse({"error": "file must be a .tar.gz"}, status_code=400)
 
-    data = await file.read()
+    data = await file.read(_MAX_IMPORT_ARCHIVE_BYTES + 1)
+    if len(data) > _MAX_IMPORT_ARCHIVE_BYTES:
+        return JSONResponse({"error": "archive too large"}, status_code=413)
     try:
-        tar = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz")
-    except tarfile.TarError as e:
-        return JSONResponse({"error": f"invalid tar.gz: {e}"}, status_code=400)
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            # Determine the agent name from the top-level directory and validate entries.
+            members = tar.getmembers()
+            if len(members) > _MAX_IMPORT_MEMBERS:
+                return JSONResponse({"error": f"archive contains too many members (max {_MAX_IMPORT_MEMBERS})"}, status_code=400)
 
-    # Determine the agent name from the top-level directory
-    members = tar.getmembers()
-    top_dirs = set()
-    for m in members:
-        parts = m.name.replace("\\", "/").split("/")
-        if parts and parts[0]:
-            top_dirs.add(parts[0])
-    if len(top_dirs) != 1:
-        return JSONResponse(
-            {"error": f"archive must contain exactly one top-level folder (found: {top_dirs})"},
-            status_code=400,
-        )
-    agent_name = top_dirs.pop()
+            def _normalize_member_name(raw_name: str) -> str:
+                if not raw_name:
+                    raise ValueError("empty member name")
+                posix_name = raw_name.replace("\\", "/").strip()
+                if posix_name.endswith("/"):
+                    posix_name = posix_name.rstrip("/")
+                if not posix_name:
+                    raise ValueError("empty member name")
+                if ":" in posix_name:
+                    raise ValueError(f"invalid character ':' in member: {raw_name}")
+                if posixpath.isabs(posix_name):
+                    raise ValueError(f"absolute path not allowed: {raw_name}")
+                if posix_name.startswith("..") or "/../" in posix_name or posix_name.endswith("/.."):
+                    raise ValueError(f"path traversal detected: {raw_name}")
+                if len(posix_name) > _MAX_MEMBER_PATH_LEN:
+                    raise ValueError(f"member path too long: {raw_name}")
+                parts = posix_name.split("/")
+                if any(part in {"", ".", ".."} for part in parts):
+                    raise ValueError(f"invalid path segment in member: {raw_name}")
+                return posix_name
 
-    # Validate agent name
-    try:
-        agent_store._validate_name(agent_name)
+            normalized_members = []
+            top_dirs = set()
+            for m in members:
+                normalized = _normalize_member_name(m.name)
+                if m.issym() or m.islnk():
+                    raise ValueError(f"symlink entry blocked: {m.name}")
+                parts = normalized.split("/")
+                if parts:
+                    top_dirs.add(parts[0])
+                normalized_members.append((m, normalized))
+
+            if len(top_dirs) != 1:
+                return JSONResponse({
+                    "error": f"archive must contain exactly one top-level folder (found: {top_dirs})"
+                }, status_code=400)
+
+            agent_name = next(iter(top_dirs))
+            # Validate agent name
+            try:
+                agent_store._validate_name(agent_name)
+            except ValueError as e:
+                return JSONResponse({"error": str(e)}, status_code=400)
+
+            # Create agent dir if needed (don't fail if already exists)
+            dest = agent_store.agent_dir(agent_name)
+            dest.mkdir(parents=True, exist_ok=True)
+            agent_store.sessions_dir(agent_name).mkdir(exist_ok=True)
+
+            # Extract all files into agents/<name>/
+            extracted = 0
+            for m, normalized in normalized_members:
+                if m.isdir():
+                    # Keep directory entries aligned; skip empty dirs after target creation.
+                    target_dir = resolve_within_base(dest, normalized)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not m.isfile():
+                    logger.warning(f"Skipping unsupported tar member type: {m.name}")
+                    continue
+                rel = normalized[len(agent_name) + 1:] if normalized.startswith(f"{agent_name}/") else ""
+                if not rel:
+                    continue
+                target = resolve_within_base(dest, rel)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    f = tar.extractfile(m)
+                    if not f:
+                        return JSONResponse({"error": f"could not read member: {m.name}"}, status_code=400)
+                    payload = f.read(_MAX_MEMBER_FILE_BYTES + 1)
+                except Exception as e:
+                    logger.error(f"Failed importing member {m.name}: {e}")
+                    return JSONResponse({"error": f"failed to extract {m.name}"}, status_code=400)
+                if len(payload) > _MAX_MEMBER_FILE_BYTES:
+                    return JSONResponse({"error": f"member too large: {m.name}"}, status_code=413)
+                target.write_bytes(payload)
+                extracted += 1
+
+            # Map the archive's metadata.json to AINow's meta.json if needed
+            archive_meta_path = dest / "metadata.json"
+            ainow_meta_path = agent_store.meta_path(agent_name)
+            if archive_meta_path.exists() and not ainow_meta_path.exists():
+                # Bootstrap meta.json from the archive's metadata
+                try:
+                    import json as _json
+                    ext_meta = _json.loads(archive_meta_path.read_text(encoding="utf-8"))
+                    if not isinstance(ext_meta, dict):
+                        raise ValueError("metadata.json must be an object")
+                    display_name = (ext_meta.get("employee", {}).get("custom_name")
+                                   or agent_name)
+                    lang = ext_meta.get("employee", {}).get("default_language") or "en"
+                    from datetime import datetime
+                    ainow_meta = {
+                        "display_name": display_name,
+                        "created_at": ext_meta.get("exportDate", datetime.now().isoformat()),
+                        "mcp_servers": {},
+                        "preferences": {"lang": f"{lang}-{'US' if lang == 'en' else lang.upper()}"},
+                    }
+                    ainow_meta_path.write_text(
+                        _json.dumps(ainow_meta, indent=2), encoding="utf-8"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to map imported metadata for {agent_name}: {e}")
+            elif not ainow_meta_path.exists():
+                # No metadata at all — write a minimal meta.json
+                agent_store._write_meta(agent_name)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
-
-    # Create agent dir if needed (don't fail if already exists)
-    dest = agent_store.agent_dir(agent_name)
-    dest.mkdir(parents=True, exist_ok=True)
-    agent_store.sessions_dir(agent_name).mkdir(exist_ok=True)
-
-    # Extract all files into agents/<name>/
-    extracted = 0
-    for m in members:
-        if m.isdir():
-            continue
-        # Security: reject paths that escape the agent dir
-        rel = os.path.relpath(m.name.replace("\\", "/"), agent_name)
-        if rel.startswith(".."):
-            continue
-        try:
-            target = resolve_within_base(dest, rel)
-        except PermissionError:
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            f = tar.extractfile(m)
-            if f:
-                target.write_bytes(f.read())
-                extracted += 1
-        except Exception:
-            continue
-
-    # Map the archive's metadata.json to AINow's meta.json if needed
-    archive_meta_path = dest / "metadata.json"
-    ainow_meta_path = agent_store.meta_path(agent_name)
-    if archive_meta_path.exists() and not ainow_meta_path.exists():
-        # Bootstrap meta.json from the archive's metadata
-        try:
-            import json as _json
-            ext_meta = _json.loads(archive_meta_path.read_text(encoding="utf-8"))
-            display_name = (ext_meta.get("employee", {}).get("custom_name")
-                           or agent_name)
-            lang = ext_meta.get("employee", {}).get("default_language") or "en"
-            from datetime import datetime
-            ainow_meta = {
-                "display_name": display_name,
-                "created_at": ext_meta.get("exportDate", datetime.now().isoformat()),
-                "mcp_servers": {},
-                "preferences": {"lang": f"{lang}-{'US' if lang == 'en' else lang.upper()}"},
-            }
-            ainow_meta_path.write_text(
-                _json.dumps(ainow_meta, indent=2), encoding="utf-8"
-            )
-        except Exception:
-            pass
-    elif not ainow_meta_path.exists():
-        # No metadata at all — write a minimal meta.json
-        agent_store._write_meta(agent_name)
-
-    tar.close()
+    except PermissionError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.error(f"Import failed: {e}")
+        return JSONResponse({"error": "import failed"}, status_code=500)
 
     # Auto-patch: if the imported agent has a memory-db skill using the old
     # Linux-only @sqliteai/sqlite-vector extension, replace its core files
@@ -590,6 +701,9 @@ async def list_scheduled_tasks(name: str):
 
 @app.post("/api/agents/{name}/scheduled_tasks")
 async def create_scheduled_task(name: str, payload: dict = Body(...)):
+    bad_payload = _require_object_payload(payload, "payload")
+    if bad_payload is not None:
+        return bad_payload
     if not agent_store.exists(name):
         return JSONResponse({"error": "agent not found"}, status_code=404)
     task_name = (payload.get("name") or "").strip()
@@ -620,6 +734,9 @@ async def create_scheduled_task(name: str, payload: dict = Body(...)):
 
 @app.put("/api/agents/{name}/scheduled_tasks/{task_id}")
 async def update_scheduled_task_route(name: str, task_id: str, payload: dict = Body(...)):
+    bad_payload = _require_object_payload(payload, "payload")
+    if bad_payload is not None:
+        return bad_payload
     if not agent_store.exists(name):
         return JSONResponse({"error": "agent not found"}, status_code=404)
     patch = {}
@@ -752,6 +869,9 @@ async def set_runtime_settings(request: Request, payload: dict = Body(...)):
     deny = _require_admin(request)
     if deny is not None:
         return deny
+    bad_payload = _require_object_payload(payload, "payload")
+    if bad_payload is not None:
+        return bad_payload
 
     from .services.model_manager import model_manager, MODELS
     model_id = model_manager.current_model

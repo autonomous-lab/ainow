@@ -19,6 +19,7 @@ import os
 import json
 import uuid
 import asyncio
+import re
 from typing import Optional
 
 from fastapi import WebSocket
@@ -36,6 +37,61 @@ from .tracer import Tracer
 from .log import Logger, get_logger
 
 logger = get_logger("ainow.conversation")
+
+
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _safe_session_id(value: str, default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    sid = value.strip()
+    if not sid:
+        return default
+    if not _SESSION_ID_RE.fullmatch(sid):
+        return default
+    return sid
+
+
+def _get_str(payload: dict, key: str, default: str = "", max_len: int = 8192) -> str:
+    value = payload.get(key, default)
+    if not isinstance(value, str):
+        return default
+    value = value.strip()
+    if not value:
+        return default
+    return value[:max_len]
+
+
+def _get_bool(payload: dict, key: str, default: bool = False) -> bool:
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _get_image_list(payload: dict, key: str = "images", max_items: int = 8) -> list:
+    """Extract an images list from a client message. Each item must be a
+    {data, mime} dict where data is a base64 data URL or raw base64 string.
+    Filters bad entries but keeps the dict shape.
+    """
+    value = payload.get(key, [])
+    if not isinstance(value, list):
+        return []
+    out: list = []
+    for item in value[:max_items]:
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data")
+        mime = item.get("mime")
+        if not isinstance(data, str) or not data:
+            continue
+        if mime is not None and not isinstance(mime, str):
+            continue
+        out.append({"data": data, "mime": mime or ""})
+    return out
 
 
 async def run_conversation_over_browser(websocket: WebSocket) -> None:
@@ -154,25 +210,54 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                         await event_queue.put(MediaEvent(audio_bytes=message["bytes"]))
                     elif message.get("text"):
                         # Text frame = control message or transcript
-                        data = json.loads(message["text"])
+                        raw = message["text"]
+                        if not isinstance(raw, str):
+                            logger.warning("Ignoring non-string websocket text frame")
+                            continue
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Ignoring invalid websocket JSON: {e}")
+                            continue
+                        if not isinstance(data, dict):
+                            logger.warning("Ignoring websocket text frame with non-object payload")
+                            continue
                         ctrl_type = data.get("type")
+                        if not isinstance(ctrl_type, str):
+                            logger.warning("Ignoring websocket control with non-string type")
+                            continue
+                        ctrl_type = ctrl_type.strip()
+                        if not ctrl_type:
+                            continue
+
+                        allowed_ctrl = {
+                            "end_of_turn", "set_tts_mute", "start_of_turn", "set_lang", "reload_mcp",
+                            "set_agent", "switch_model", "set_voice", "tool_confirm_response",
+                            "browser_tool_result", "set_session_id", "clear_session", "restore_history",
+                            "save_session", "load_session", "list_sessions", "stop"
+                        }
+                        if ctrl_type not in allowed_ctrl:
+                            logger.warning(f"Ignoring unknown control type: {ctrl_type}")
+                            continue
 
                         if ctrl_type == "end_of_turn":
                             # Browser STT finished — user done speaking
-                            transcript = data.get("transcript", "").strip()
-                            images = tuple(data.get("images", []))
-                            audio = data.get("audio")  # base64 WAV for audio LLM mode
+                            transcript = _get_str(data, "transcript")
+                            images = tuple(_get_image_list(data, "images"))
+                            audio = data.get("audio")
+                            if not isinstance(audio, str):
+                                audio = None
                             if transcript or images or audio:
                                 await event_queue.put(EndOfTurnEvent(transcript=transcript, images=images, audio=audio))
                         elif ctrl_type == "set_tts_mute":
                             nonlocal tts_muted
-                            tts_muted = bool(data.get("muted", False))
+                            tts_muted = _get_bool(data, "muted", False)
                             logger.info(f"TTS mute set to: {tts_muted}")
                         elif ctrl_type == "start_of_turn":
                             # Browser detected user speaking (barge-in)
                             await event_queue.put(StartOfTurnEvent())
                         elif ctrl_type == "set_lang":
-                            lang = data.get("lang", "en-US")
+                            lang = _get_str(data, "lang", "en-US", 32)
                             if hasattr(tts_pool, 'lang'):
                                 tts_pool.lang = lang
                             if hasattr(stt, 'language'):
@@ -180,15 +265,15 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                             # Persist as a per-agent preference
                             try:
                                 agent_store.update_preferences(active_agent_name, {"lang": lang})
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning(f"Failed to persist lang preference: {e}")
                             logger.info(f"Language set to: {lang}")
                         elif ctrl_type == "reload_mcp":
                             # Force-reload MCP servers for the current agent (after UI edit).
                             # Run in background so the WS reader doesn't block.
                             asyncio.create_task(_activate_mcp_for(active_agent_name, force=True))
                         elif ctrl_type == "set_agent":
-                            new_name = data.get("name", "").strip()
+                            new_name = _get_str(data, "name", "", 128)
                             if new_name and agent_store.exists(new_name):
                                 active_agent_name = new_name
                                 agent_store.set_active(new_name)
@@ -216,8 +301,8 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                                         "name": new_name,
                                         "preferences": prefs,
                                     }))
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.warning(f"Failed to apply preference after agent switch: {e}")
                             else:
                                 logger.warning(f"Cannot switch to unknown agent: {new_name}")
                         elif ctrl_type == "switch_model":
@@ -236,19 +321,19 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                                 except Exception:
                                     pass
                         elif ctrl_type == "set_voice":
-                            voice = data.get("voice", "")
+                            voice = _get_str(data, "voice", "")
                             if hasattr(tts_pool, 'voice'):
                                 tts_pool.voice = voice or None
                                 logger.info(f"Voice set to: {voice or 'default'}")
                             # Persist as a per-agent preference
                             try:
                                 agent_store.update_preferences(active_agent_name, {"voice": voice})
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning(f"Failed to persist voice preference: {e}")
                         elif ctrl_type == "tool_confirm_response":
-                            confirm_id = data.get("confirm_id", "")
-                            approved = data.get("approved", False)
-                            always = bool(data.get("always", False))
+                            confirm_id = _get_str(data, "confirm_id", "")
+                            approved = _get_bool(data, "approved", False)
+                            always = _get_bool(data, "always", False)
                             entry = pending_confirms.pop(confirm_id, None)
                             if entry:
                                 tool_name, fut = entry
@@ -258,14 +343,15 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                                 if fut and not fut.done():
                                     fut.set_result(approved)
                         elif ctrl_type == "browser_tool_result":
-                            request_id = data.get("request_id", "")
+                            request_id = _get_str(data, "request_id", "")
                             result = data.get("result", "")
                             fut = pending_browser_tools.pop(request_id, None)
                             if fut and not fut.done():
                                 fut.set_result(result)
                         elif ctrl_type == "set_session_id":
                             nonlocal session_id
-                            session_id = data.get("session_id", session_id)
+                            candidate = _get_str(data, "session_id", "", max_len=128)
+                            session_id = _safe_session_id(candidate, session_id)
                             logger.info(f"Session ID set to: {session_id}")
                         elif ctrl_type == "clear_session":
                             if agent:
@@ -284,10 +370,14 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                                     pass
                             logger.info("Session cleared (history reset)")
                         elif ctrl_type == "restore_history":
+                            restored_count = 0
                             if agent:
                                 agent.clear_history()
                                 messages = data.get("messages", [])
+                                if not isinstance(messages, list):
+                                    messages = []
                                 agent.restore_history(messages)
+                                restored_count = len(agent.history)
                                 # Refresh the CTX badge after restoring
                                 try:
                                     await websocket.send_text(json.dumps({
@@ -300,10 +390,11 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                                     }))
                                 except Exception:
                                     pass
-                            logger.info(f"History restored ({len(data.get('messages', []))} messages)")
+                            logger.info(f"History restored ({restored_count} messages)")
                         elif ctrl_type == "save_session":
-                            session_id = data.get("session_id", str(uuid.uuid4()))
+                            session_id = _get_str(data, "session_id", str(uuid.uuid4()), 128)
                             if agent:
+                                session_id = _safe_session_id(session_id, str(uuid.uuid4()))
                                 path = agent.save_session(session_id)
                                 logger.info(f"Session saved: {session_id}")
                                 try:
@@ -314,8 +405,9 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                                 except Exception:
                                     pass
                         elif ctrl_type == "load_session":
-                            sid = data.get("session_id", "")
-                            if agent and agent.load_session(sid):
+                            sid = _get_str(data, "session_id", "", 128)
+                            sid = _safe_session_id(sid, "")
+                            if agent and sid and agent.load_session(sid):
                                 # Send loaded messages to browser for display
                                 history = agent.history
                                 chat_msgs = []
@@ -344,8 +436,8 @@ async def run_conversation_over_browser(websocket: WebSocket) -> None:
                                         "session_id": sid,
                                         "messages": chat_msgs,
                                     }))
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.warning(f"Failed to send session list: {e}")
                                 logger.info(f"Session loaded: {sid} ({len(chat_msgs)} messages)")
                             else:
                                 logger.warning(f"Session not found: {sid}")
