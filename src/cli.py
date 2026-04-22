@@ -923,14 +923,33 @@ def _attach_to_running_llama(model_id: str, config: dict, port: int) -> bool:
         os.environ["LLM_API_KEY"] = "not-needed"
         # Mirror the running state into the singleton so model_manager.current_model,
         # context_size, etc. return the right values without actually re-starting.
-        from .services.model_manager import model_manager, MODELS
+        from .services.model_manager import model_manager, MODELS, COMMON_ARGS
         model_manager._current_model = model_id
         cfg = MODELS.get(model_id, {})
+        # Prefer the per-model config, then the running server's /props, then
+        # the global COMMON_ARGS default. Never leave it at 0 — otherwise the
+        # banner shows "context: unknown" and the toolbar shows 0%.
+        ctx_val = 0
         if "ctx" in cfg:
             try:
-                model_manager._last_ctx = int(cfg["ctx"])
+                ctx_val = int(cfg["ctx"])
             except (TypeError, ValueError):
                 pass
+        if not ctx_val:
+            try:
+                props = httpx.get(f"http://127.0.0.1:{port}/props", timeout=2.0)
+                if props.status_code == 200:
+                    data = props.json()
+                    # Newer llama.cpp exposes `default_generation_settings` or `n_ctx` at top level
+                    ctx_val = int(data.get("n_ctx") or data.get("default_generation_settings", {}).get("n_ctx") or 0)
+            except Exception:
+                pass
+        if not ctx_val:
+            try:
+                ctx_val = int(COMMON_ARGS[COMMON_ARGS.index("-c") + 1])
+            except (ValueError, IndexError):
+                ctx_val = 0
+        model_manager._last_ctx = ctx_val
         model_manager._last_vision_enabled = True
         model_manager._last_thinking_enabled = False
         return True
@@ -1038,8 +1057,18 @@ async def _run_one_turn(state: CLIState, prompt: str) -> None:
     # raw-bytes token streaming on stdout, which produced visible line breaks
     # between the first two tokens (e.g. "Good" → "\n" → " evening"). The
     # tokens themselves are enough live feedback.
+
+    # Auto-attach images whose absolute paths were pasted in the prompt, so the
+    # model can actually SEE them instead of hallucinating a description after
+    # `read` bounces off the path sandbox.
+    clean_prompt, attached_images = _extract_image_attachments(prompt)
+    if attached_images:
+        console.print(Text.from_markup(
+            f"[dim]attached {len(attached_images)} image(s) as vision input[/dim]"
+        ))
+
     try:
-        await state.llm.start(prompt)
+        await state.llm.start(clean_prompt, images=attached_images or None)
         await done.wait()
     except (KeyboardInterrupt, asyncio.CancelledError):
         # Hard-abort path: force-stop and swallow so the REPL continues.
@@ -1116,6 +1145,59 @@ async def _run_bash_shortcut(state: CLIState, command: str, silent: bool) -> Non
 
 
 _FILE_REF_RE = __import__("re").compile(r"(?:^|(?<=\s))@([A-Za-z0-9_./\\:-]+)")
+_IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
+# Detect absolute image paths the user pasted directly. Three shapes:
+#   1. "C:\path with spaces (and parens).jpg"   (double-quoted)
+#   2. 'C:\path.jpg'                            (single-quoted)
+#   3. C:\nospace.jpg or /unix/path.png         (unquoted, no spaces)
+_IMG_EXT_ALT = r"jpg|jpeg|png|gif|webp|bmp"
+_IMG_PATH_RE = __import__("re").compile(
+    r'"((?:[A-Za-z]:[\\/]|/)[^"]+\.(?:' + _IMG_EXT_ALT + r'))"'
+    r'|'
+    r"'((?:[A-Za-z]:[\\/]|/)[^']+\.(?:" + _IMG_EXT_ALT + r"))'"
+    r'|'
+    r'((?:[A-Za-z]:[\\/]|/)[^\s"\'<>|*?]+\.(?:' + _IMG_EXT_ALT + r'))',
+    __import__("re").IGNORECASE,
+)
+
+
+def _extract_image_attachments(prompt: str) -> tuple[str, list[dict]]:
+    """Scan the prompt for absolute image paths (quoted or bare). For each
+    existing image, read the bytes, base64-encode, return it as an LLMService
+    attachment dict, and replace the path in the prompt text with a friendly
+    marker so the model doesn't try to re-read the filename.
+    """
+    import base64, mimetypes, os as _os
+    found: list[dict] = []
+    replaced = prompt
+    for m in _IMG_PATH_RE.finditer(prompt):
+        # Only one of the three capture groups is set per match
+        raw_path = m.group(1) or m.group(2) or m.group(3) or ""
+        full_match = m.group(0)
+        if not raw_path:
+            continue
+        try:
+            if not _os.path.isfile(raw_path):
+                continue
+            with open(raw_path, "rb") as f:
+                data = f.read()
+            if len(data) > 20 * 1024 * 1024:  # 20 MB cap per image
+                continue
+            mime = mimetypes.guess_type(raw_path)[0] or "image/jpeg"
+            b64 = base64.b64encode(data).decode("ascii")
+            found.append({"data": f"data:{mime};base64,{b64}", "mime": mime})
+            # Replace the full match (including any surrounding quotes) with a
+            # marker that doesn't mention the filename. Small models keep
+            # seeing `.jpg` in the text and calling read() on it otherwise.
+            replaced = replaced.replace(
+                full_match,
+                "(the image has already been attached to this message as vision "
+                "input — describe what you see directly, do NOT call any tool "
+                "or try to read a file)",
+            )
+        except Exception:
+            continue
+    return replaced, found
 
 
 def _expand_file_refs(state: CLIState, prompt: str) -> str:
