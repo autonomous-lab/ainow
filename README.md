@@ -23,7 +23,7 @@ AINow is a general-purpose local agent that adapts to several workflows out of t
 
 ## How it works
 
-Browser-based voice assistant with streaming LLM, TTS, tool calling, and a sophisticated agentic loop:
+Local-first agent runtime with a browser UI **and** a Rich/prompt_toolkit CLI, streaming LLM, tool calling, and a sophisticated agentic loop:
 
 - **Server STT (Whisper)** — Local faster-whisper with Silero VAD for speech detection. Higher transcript quality and better barge-in handling than browser STT. Falls back to browser Web Speech API if disabled.
 - **Server TTS (Kokoro)** — Local Kokoro TTS streamed via Web Audio API. Lower latency and better barge-in than browser speechSynthesis. Supports EN/FR/ES/IT/PT/ZH/HI.
@@ -49,15 +49,23 @@ LISTENING ──EndOfTurn──→ RESPONDING ──Done──→ LISTENING
 ## Usage
 
 ```bash
+# Web UI
 python main.py                    # default: Qwen 9B
 python main.py -m 4b              # smaller model (less VRAM)
-python main.py -m 27b             # larger model (more quality)
+python main.py -m 27b             # larger Qwen 3.5 dense
+python main.py -m 35b-agg         # Qwen 3.6 35B MoE (uncensored, with vision)
+python main.py -m 27b-iq2         # Qwen 3.6 27B (local LM Studio path)
 python main.py -m gemma           # custom Gemma 4 (uncensored, via MODEL_GEMMA env)
 python main.py -m heretic         # custom Gemma 4 26B (uncensored, via MODEL_HERETIC env)
 python main.py -m online          # Cloud provider (OpenRouter, OpenAI, etc.)
+
+# Headless CLI (same tools, agents, skill packs)
+python -m src.cli -i                          # REPL with prompt_toolkit TUI
+python -m src.cli "refactor foo.py"           # one-shot
+python -m src.cli --yolo "run the tests"      # auto-approve tool calls
 ```
 
-You can also switch models from the UI dropdown at runtime — no restart needed.
+You can also switch models from the UI dropdown at runtime — no restart needed. If the web UI is already running a model, `python -m src.cli` attaches to it instead of restarting llama-server (sub-second cold start).
 
 ### Available models
 
@@ -282,14 +290,18 @@ Cron times use the **server's local time** (not UTC). Headless task execution au
 
 | Category | Tools |
 |----------|-------|
-| File ops | `read`, `write`, `edit` (string match or line-range), `multi_edit` |
+| File ops | `read`, `write` (refuses to overwrite — use `edit` or pass `overwrite: true`), `edit` (string match or line-range), `multi_edit` |
 | Search | `grep`, `glob`, `ls` |
 | System | `bash` |
+| Dev | `get_diagnostics` (pyright → mypy → pyflakes / tsc / node --check / shellcheck / go vet / cargo check) |
+| Tasks | `task_create`, `task_update`, `task_get`, `task_list` (per-agent TODO list persisted to `agents/<name>/tasks.json`) |
 | Web | `web_search`, `web_fetch` |
 | Browser | `list_devices`, `capture_frame(source="webcam"\|"screen")` |
 | MCP | Anything the active agent's MCP servers expose, namespaced as `mcp__<server>__<tool>` |
 
 Read-only tools auto-execute. Dangerous tools (`write`, `edit`, `bash`, MCP tools) require user confirmation. The `bash` whitelist auto-approves safe commands (`ls`, `pwd`, `echo`, `git status`, `git log`, `git diff`, etc. — `cat`/`head`/`tail` intentionally excluded, the model should use `read`) plus any runner (`node`, `python`, `bash`) targeting `.skills/` paths inside the agent's own folder — so user-authored skill scripts run without confirm popups.
+
+**Write-vs-Edit guard:** `write` refuses to overwrite an existing file and tells the model to use `edit` / `multi_edit` instead. Pass `overwrite: true` for a deliberate full replacement. Eliminates a whole category of accidental destruction.
 
 **Path sandbox:** file tools (`read`, `write`, `edit`, `multi_edit`, `ls`, `grep`, `glob`) and the server's file endpoints resolve every path through `src/path_security.py`, which rejects traversal via `..`, absolute paths, or prefix-sibling tricks. The agent can only touch files under its own `agents/<name>/` directory.
 
@@ -494,13 +506,13 @@ src/cli.py                       # `python -m src.cli` — headless CLI agent
 
 ## CLI (headless mode)
 
-Use AINow as a local coding / chat agent without the browser — with a Rich-powered TUI.
+Use AINow as a local coding / chat agent without the browser — prompt_toolkit TUI with a persistent bottom toolbar, path completion, history, and slash commands.
 
 ```bash
 # One-shot
 python -m src.cli "list all python files under src/ and tell me the biggest one"
 
-# Interactive REPL with startup banner + live status line
+# Interactive REPL
 python -m src.cli -i
 
 # Pick agent + model
@@ -508,7 +520,20 @@ python -m src.cli -a donald-trump -m 27b-iq2 "write me a haiku"
 
 # Auto-approve every tool call (use with care)
 python -m src.cli --yolo "clean up the dead imports in src/services/llm.py"
+
+# One-line banner instead of the boxed panel
+python -m src.cli -i --minimal-banner
+
+# Take over the terminal (alt-screen, à la vim / less). Default is off so
+# you keep terminal scrollback; opt-in if you want a "full TUI" feel.
+python -m src.cli -i --altscreen
 ```
+
+### Fast cold start
+
+On launch the CLI probes `http://127.0.0.1:8080/health` + `/v1/models`; if a llama-server is already running with the requested model (typically because the web UI is open), the CLI **attaches** to it instead of restarting. llama-server cold start is 3–7s, attach is <200ms. If the web UI is closed the CLI falls back to the same auto-download / auto-build path `main.py` uses.
+
+LLMService imports are deferred to the first turn to keep `--help` and the banner sub-second.
 
 ### REPL slash commands
 
@@ -516,18 +541,23 @@ python -m src.cli --yolo "clean up the dead imports in src/services/llm.py"
 |---|---|
 | `/help` | list all commands |
 | `/model [alias]` | switch model (e.g. `/model 27b-iq2`, `/model online`) or show current |
-| `/agent [name]` | switch the active agent or show current |
+| `/agent` | list all agents with active marker, model, lang, MCP + task counts |
+| `/agent <name>` | switch to an agent |
+| `/agent new <name>` | create a new agent |
+| `/agent delete <name>` | delete an agent (confirm required even under `--yolo`) |
+| `/agent edit [name]` | open `CLAUDE.md` in `$EDITOR` — re-read on next turn |
+| `/agent info [name]` | full agent detail (cwd, model, lang, voice, vision, MCP list, …) |
 | `/thinking` | toggle reasoning mode on/off (reloads llama-server) |
 | `/permissions [mode]` | switch between `yolo` and `confirm` at runtime |
 | `/context` | detailed context breakdown (used / max, msg count) |
-| `/history` | print the conversation history with message indices |
+| `/history` | print conversation history with message indices |
 | `/clear` | reset conversation history (keeps agent + model) |
 | `/compact` | force context compaction now |
 | `/save [id]` | save current session (auto-generated id if omitted) |
 | `/load <id>` | load a named session |
 | `/tree` | list saved sessions |
 | `/fork <idx>` | branch a new session from message index (see `/history`) |
-| `/skills` | list loaded skill-knowledge packs |
+| `/skills` | list loaded skill-knowledge packs with their triggers |
 | `/cwd` | show the tool working directory |
 | `/verbose` | toggle verbose mode |
 | `/quit` \| `/exit` | leave |
@@ -556,13 +586,14 @@ python -m src.cli --yolo "clean up the dead imports in src/services/llm.py"
 |---|---|
 | `Ctrl+O` | toggle full tool-output expansion |
 | `Ctrl+T` | toggle live thinking-token display |
-| `Shift+Tab` | toggle reasoning mode (reloads llama-server) |
+| `Shift+Tab` | toggle reasoning mode — **two-press confirm** (5s window) to avoid an accidental llama-server reload |
 | `Ctrl+L` | quick model picker |
+| `Ctrl+C` during a turn | first press signals graceful stop, second aborts hard |
 | `Ctrl+R` | reverse incremental history search |
 | `Ctrl+A` / `Ctrl+E` | jump to start / end of line |
 | `Ctrl+W` | delete word |
 | `Ctrl+U` | delete to start of line |
-| `↑` / `↓` | history navigation |
+| `↑` / `↓` | history navigation (persisted in `~/.ainow_cli_history`) |
 | `Tab` | complete `@path/to/file` reference |
 | `Ctrl+D` | exit |
 
