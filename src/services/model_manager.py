@@ -38,6 +38,7 @@ MODEL_ALIASES = {
     "35b": "qwen3.6-35b",
     "35b-iq1": "qwen3.6-35b-iq1",
     "35b-agg": "qwen3.6-35b-agg",
+    "27b-iq2": "qwen3.6-27b-iq2",
     "online": "online",
     "online2": "online2",
 }
@@ -110,6 +111,12 @@ def _build_models():
             ],
             "model": _model_path("Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive", "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ2_M.gguf"),
             "mmproj": _model_path("Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive", "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"),
+            "ctx": "32768",
+        },
+        "qwen3.6-27b-iq2": {
+            "name": "Qwen 3.6 27B (IQ2)",
+            "model": os.path.join(os.path.expanduser("~"), ".lmstudio", "models", "unsloth", "Qwen3.6-27B-GGUF", "Qwen3.6-27B-UD-IQ2_M.gguf"),
+            "mmproj": os.path.join(os.path.expanduser("~"), ".lmstudio", "models", "unsloth", "Qwen3.6-27B-GGUF", "mmproj-F32.gguf"),
             "ctx": "32768",
         },
         "online": {
@@ -543,6 +550,33 @@ class ModelManager:
             raise ValueError(f"Unknown model: {model_id}")
 
         config = MODELS[model_id]
+
+        # Compute what the effective ctx would be for this request.
+        if ctx_override is not None:
+            _req_ctx = int(ctx_override)
+        elif "ctx" in config:
+            _req_ctx = int(config["ctx"])
+        else:
+            try:
+                _req_ctx = int(COMMON_ARGS[COMMON_ARGS.index("-c") + 1])
+            except Exception:
+                _req_ctx = 0
+
+        # Short-circuit: if the same model is already running with the same
+        # params and the server is healthy, skip the ~3-7s unload/reload cycle.
+        if (
+            self._current_model == model_id
+            and self._last_vision_enabled == vision_enabled
+            and self._last_thinking_enabled == thinking_enabled
+            and self._last_ctx == _req_ctx
+            and self._check_health_sync()
+        ):
+            logger.info(
+                f"llama-server already running with {config['name']} "
+                f"(ctx={_req_ctx}, vision={vision_enabled}, thinking={thinking_enabled}) — reusing"
+            )
+            return
+
         self._last_vision_enabled = vision_enabled
         self._last_thinking_enabled = thinking_enabled
 

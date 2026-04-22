@@ -199,8 +199,36 @@ async def get_session(session_id: str):
     for msg in raw_msgs:
         role = msg.get("role", "")
         content = msg.get("content", "")
+        images: list = []
         if isinstance(content, list):
-            content = " ".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+            text_parts: list = []
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                ctype = c.get("type")
+                if ctype == "text":
+                    text_parts.append(c.get("text", ""))
+                elif ctype == "image_url":
+                    url = (c.get("image_url") or {}).get("url", "")
+                    if isinstance(url, str) and url.startswith("data:"):
+                        mime = ""
+                        # Extract mime from data URL: data:<mime>;base64,...
+                        if ";" in url[:50]:
+                            mime = url[5:].split(";", 1)[0]
+                        images.append({"data": url, "mime": mime})
+                elif ctype in ("input_audio", "audio_url"):
+                    if ctype == "input_audio":
+                        audio = c.get("input_audio") or {}
+                        fmt = audio.get("format", "mp3")
+                        b64 = audio.get("data", "")
+                        if b64:
+                            images.append({"data": f"data:audio/{fmt};base64,{b64}", "mime": f"audio/{fmt}"})
+                    else:
+                        url = (c.get("audio_url") or {}).get("url", "")
+                        if isinstance(url, str) and url.startswith("data:"):
+                            mime = url[5:].split(";", 1)[0] if ";" in url[:50] else "audio/mpeg"
+                            images.append({"data": url, "mime": mime})
+            content = " ".join(text_parts)
         if role == "thinking":
             messages.append({
                 "role": "thinking",
@@ -220,8 +248,11 @@ async def get_session(session_id: str):
                     "toolResult": tool_results.get(tcid, ""),
                     "text": "",
                 })
-        elif role == "user" and content:
-            messages.append({"role": "user", "text": content})
+        elif role == "user" and (content or images):
+            entry = {"role": "user", "text": content}
+            if images:
+                entry["images"] = images
+            messages.append(entry)
         # role == "tool" handled via tool_results mapping above
     return {"id": data.get("id"), "messages": messages}
 

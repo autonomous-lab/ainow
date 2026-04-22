@@ -13,7 +13,9 @@ import re
 import json
 import glob as glob_mod
 import asyncio
+import shutil
 import subprocess
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Callable, Awaitable, Dict, Any
@@ -217,6 +219,22 @@ async def _tool_read(args: dict, cwd: str) -> str:
 async def _tool_write(args: dict, cwd: str) -> str:
     path = _resolve(args["path"], cwd)
     content = args["content"]
+    overwrite = bool(args.get("overwrite", False))
+
+    # Write-vs-Edit guard (from little-coder): prevent accidental overwrite of
+    # existing files. The model should use `edit` / `multi_edit` to modify
+    # existing content. Pass overwrite=true only when the intent is a full
+    # replacement (e.g. after a read confirmed it's safe).
+    if os.path.isfile(path) and not overwrite:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        return (
+            f"Error: '{os.path.basename(path)}' already exists ({size} bytes). "
+            f"Use `edit` or `multi_edit` to modify it, or call `write` again with "
+            f"`overwrite: true` if you truly intend to replace the full content."
+        )
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -732,6 +750,212 @@ async def _noop_browser_tool(args: dict, cwd: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Task tools — simple per-agent TODO list the model can manage across a turn.
+# Persisted to agents/<name>/tasks.json so tasks survive restarts.
+# ---------------------------------------------------------------------------
+
+_TASK_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+
+
+def _tasks_path(cwd: str) -> Path:
+    # Task list lives alongside the agent's workspace so it's per-agent by default.
+    return Path(cwd) / "tasks.json"
+
+
+def _load_tasks(cwd: str) -> list:
+    p = _tasks_path(cwd)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_tasks(cwd: str, tasks: list) -> None:
+    p = _tasks_path(cwd)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(tasks, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _next_task_id(tasks: list) -> str:
+    nums = []
+    for t in tasks:
+        tid = str(t.get("id", ""))
+        if tid.startswith("t") and tid[1:].isdigit():
+            nums.append(int(tid[1:]))
+    return f"t{(max(nums) + 1) if nums else 1}"
+
+
+def _format_task(t: dict) -> str:
+    status_emoji = {"pending": "☐", "in_progress": "▶", "completed": "✓", "cancelled": "✗"}.get(t.get("status", "pending"), "☐")
+    parts = [f"{status_emoji} [{t.get('id', '?')}] {t.get('title', '?')}"]
+    if t.get("description"):
+        parts.append(f"    {t['description']}")
+    if t.get("blocks"):
+        parts.append(f"    blocks: {', '.join(t['blocks'])}")
+    return "\n".join(parts)
+
+
+async def _tool_task_create(args: dict, cwd: str) -> str:
+    title = args.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return "Error: 'title' is required"
+    tasks = _load_tasks(cwd)
+    task = {
+        "id": _next_task_id(tasks),
+        "title": title.strip(),
+        "description": str(args.get("description", "") or ""),
+        "status": "pending",
+        "blocks": list(args.get("blocks") or []),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    tasks.append(task)
+    _save_tasks(cwd, tasks)
+    return f"Created {_format_task(task)}"
+
+
+async def _tool_task_update(args: dict, cwd: str) -> str:
+    tid = args.get("id")
+    if not isinstance(tid, str) or not tid:
+        return "Error: 'id' is required"
+    tasks = _load_tasks(cwd)
+    for t in tasks:
+        if str(t.get("id")) == tid:
+            for k in ("title", "description"):
+                if k in args and args[k] is not None:
+                    t[k] = str(args[k])
+            if "status" in args and args["status"] is not None:
+                status = str(args["status"]).lower()
+                if status not in _TASK_STATUSES:
+                    return f"Error: status must be one of {sorted(_TASK_STATUSES)}"
+                t["status"] = status
+            if "blocks" in args and args["blocks"] is not None:
+                t["blocks"] = list(args["blocks"])
+            _save_tasks(cwd, tasks)
+            return f"Updated {_format_task(t)}"
+    return f"Error: task {tid} not found"
+
+
+async def _tool_task_get(args: dict, cwd: str) -> str:
+    tid = args.get("id")
+    if not isinstance(tid, str) or not tid:
+        return "Error: 'id' is required"
+    tasks = _load_tasks(cwd)
+    for t in tasks:
+        if str(t.get("id")) == tid:
+            return _format_task(t)
+    return f"Error: task {tid} not found"
+
+
+async def _tool_task_list(args: dict, cwd: str) -> str:
+    tasks = _load_tasks(cwd)
+    status_filter = args.get("status")
+    if status_filter:
+        status_filter = str(status_filter).lower()
+        tasks = [t for t in tasks if t.get("status") == status_filter]
+    if not tasks:
+        return "(no tasks)"
+    lines = [f"{len(tasks)} task(s):"]
+    for t in tasks:
+        lines.append(_format_task(t))
+    return "\n".join(lines)
+
+
+_DIAGNOSTIC_CHAINS: Dict[str, list[list[str]]] = {
+    # Extension → list of command templates (first one available wins).
+    "py": [
+        ["pyright", "--outputjson", "{path}"],
+        ["mypy", "--no-error-summary", "{path}"],
+        ["python", "-m", "pyflakes", "{path}"],
+    ],
+    "pyi": [["pyright", "--outputjson", "{path}"]],
+    "ts": [["tsc", "--noEmit", "--pretty", "false", "{path}"]],
+    "tsx": [["tsc", "--noEmit", "--pretty", "false", "{path}"]],
+    "js": [["node", "--check", "{path}"]],
+    "jsx": [["node", "--check", "{path}"]],
+    "sh": [["shellcheck", "{path}"]],
+    "bash": [["shellcheck", "{path}"]],
+    "go": [["go", "vet", "{path}"]],
+    "rs": [["cargo", "check", "--message-format=short", "--manifest-path", "{manifest}"]],
+}
+
+
+async def _tool_get_diagnostics(args: dict, cwd: str) -> str:
+    """Run a language-appropriate linter/type-checker and return its output.
+
+    Falls back through a chain (e.g. pyright → mypy → pyflakes for Python) so
+    models don't have to know which tool is installed. Empty output = no issues.
+    """
+    path_arg = args.get("path")
+    if not isinstance(path_arg, str) or not path_arg:
+        return "Error: 'path' parameter is required"
+    path = _resolve(path_arg, cwd)
+    if not os.path.exists(path):
+        return f"Error: File not found: {path}"
+
+    ext = path.rsplit(".", 1)[-1].lower() if "." in os.path.basename(path) else ""
+    chains = _DIAGNOSTIC_CHAINS.get(ext)
+    if not chains:
+        return f"No diagnostic tool configured for .{ext} files. Supported: {', '.join(sorted(_DIAGNOSTIC_CHAINS))}"
+
+    last_error = ""
+    for chain in chains:
+        exe = chain[0]
+        if not shutil.which(exe):
+            last_error = f"{exe} not installed"
+            continue
+        cmd = []
+        for part in chain:
+            if part == "{path}":
+                cmd.append(path)
+            elif part == "{manifest}":
+                # Walk up for Cargo.toml
+                manifest = None
+                d = Path(path).resolve().parent
+                for candidate in [d] + list(d.parents):
+                    m = candidate / "Cargo.toml"
+                    if m.exists():
+                        manifest = str(m)
+                        break
+                if not manifest:
+                    return "Error: no Cargo.toml found above file"
+                cmd.append(manifest)
+            else:
+                cmd.append(part)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=cwd,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            output = stdout.decode("utf-8", errors="replace").strip()
+            header = f"[{exe}] exit={proc.returncode}\n"
+            if not output:
+                return header + "(no issues)"
+            if len(output) > MAX_OUTPUT:
+                output = output[:MAX_OUTPUT] + "\n... (truncated)"
+            return header + output
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            last_error = f"{exe} timed out"
+            continue
+        except Exception as e:
+            last_error = f"{exe} failed: {e}"
+            continue
+
+    return f"Error: no working diagnostic tool for .{ext}. Last attempt: {last_error}"
+
+
 # ===========================================================================
 # Register all tools
 # ===========================================================================
@@ -760,12 +984,13 @@ def _register_all():
         name="write",
         schema={
             "name": "write",
-            "description": "Create or overwrite a file with the given content.",
+            "description": "Create a NEW file. Refuses to overwrite existing files (use `edit` or `multi_edit` to modify). Pass overwrite=true only when fully replacing the file intentionally.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path to write"},
                     "content": {"type": "string", "description": "File content to write"},
+                    "overwrite": {"type": "boolean", "description": "If true, replace an existing file. Default false — the call will error if the file exists."},
                 },
                 "required": ["path", "content"],
             },
@@ -962,6 +1187,94 @@ def _register_all():
             },
         },
         func=_tool_web_fetch,
+        read_only=True,
+    ))
+
+    register_tool(ToolDef(
+        name="get_diagnostics",
+        schema={
+            "name": "get_diagnostics",
+            "description": "Lint/type-check a single file. Tries pyright→mypy→pyflakes for .py, tsc for .ts/.tsx, node --check for .js/.jsx, shellcheck for .sh, go vet for .go, cargo check for .rs. Empty output means no issues.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the source file to analyze"},
+                },
+                "required": ["path"],
+            },
+        },
+        func=_tool_get_diagnostics,
+        read_only=True,
+    ))
+
+    register_tool(ToolDef(
+        name="task_create",
+        schema={
+            "name": "task_create",
+            "description": "Create a new task in the per-agent TODO list. Use for multi-step work: create a task, then update status as you progress. The task list survives restarts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short imperative summary, e.g. 'Add pagination to users endpoint'"},
+                    "description": {"type": "string", "description": "Optional longer context / acceptance criteria"},
+                    "blocks": {"type": "array", "items": {"type": "string"}, "description": "Optional list of task ids this one blocks"},
+                },
+                "required": ["title"],
+            },
+        },
+        func=_tool_task_create,
+        read_only=False,
+    ))
+
+    register_tool(ToolDef(
+        name="task_update",
+        schema={
+            "name": "task_update",
+            "description": "Update an existing task. Typical use: set status to 'in_progress' before working, 'completed' when done. Status: pending / in_progress / completed / cancelled.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Task id (from task_create / task_list)"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]},
+                    "blocks": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["id"],
+            },
+        },
+        func=_tool_task_update,
+        read_only=False,
+    ))
+
+    register_tool(ToolDef(
+        name="task_get",
+        schema={
+            "name": "task_get",
+            "description": "Fetch a single task by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+        func=_tool_task_get,
+        read_only=True,
+    ))
+
+    register_tool(ToolDef(
+        name="task_list",
+        schema={
+            "name": "task_list",
+            "description": "List all tasks. Optional status filter narrows to a single state.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "cancelled"]},
+                },
+            },
+        },
+        func=_tool_task_list,
         read_only=True,
     ))
 

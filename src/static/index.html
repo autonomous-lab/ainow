@@ -2952,7 +2952,7 @@ function mapSessionMessages(messages) {
         text: "",
       }];
     }
-    return [{ role: m.role, text: m.text || "", images: [], duration: m.duration }];
+    return [{ role: m.role, text: m.text || "", images: m.images || [], duration: m.duration }];
   });
 }
 
@@ -4385,13 +4385,11 @@ function handleControlMessage(msg) {
       break;
 
     case "session_loaded":
-      // Server loaded a session — replace chat display with its messages
-      chatHistory = (msg.messages || []).map(m => ({
-        role: m.role,
-        text: m.text || "",
-        images: [],
-      }));
-      renderChatLog();
+      // Server confirms the session is loaded server-side (agent._llm.history).
+      // Do NOT overwrite chatHistory here: the browser already populated it via
+      // GET /api/sessions/{id}, which preserves tool calls, images, and thinking
+      // blocks that the WS payload strips. This handler is intentionally a no-op
+      // for the chat display — only the CTX badge (sent separately) updates.
       break;
 
     case "tool_call":

@@ -1,6 +1,6 @@
 # AINow
 
-A conversational AI framework with voice, vision, per-agent workspaces, MCP tool ecosystem, and scheduled cron-AI tasks. Runs entirely local — no cloud APIs required.
+**Local-first AI agent framework** — chat, voice, vision, coding, scheduled background tasks, MCP. Runs entirely on your GPU, no cloud APIs required.
 
 ![AINow UI](docs/ui-screenshot.png)
 
@@ -8,6 +8,18 @@ A conversational AI framework with voice, vision, per-agent workspaces, MCP tool
 python main.py
 # Open http://localhost:3040
 ```
+
+## Modes of use
+
+AINow is a general-purpose local agent that adapts to several workflows out of the box:
+
+- **Text chat** — a fast, local ChatGPT-style assistant with markdown rendering, streaming, per-conversation memory, and file/image/audio attachments.
+- **Local coding agent** — file tools (`read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `ls`), `bash` with a safe-command whitelist, git-aware workspace context, and skill-knowledge packs that inject focused guidance for testing / editing / debugging / git workflows.
+- **Voice assistant** — STT (Whisper or browser), TTS (Kokoro or browser), Silero VAD for barge-in. Server STT/TTS give lower latency; browser fallback for no-GPU setups.
+- **Vision** — webcam / screen capture, image paste/upload, `mmproj`-based local vision on Qwen/Gemma, or cloud vision via Gemini/GPT-4/Claude through an OpenAI-compatible endpoint.
+- **Scheduled background tasks (Cron AI)** — per-agent recurring prompts (daily news digest, periodic code checks, etc.) running headless and saving results as chats.
+- **Per-agent workspaces** — each agent has its own folder with `CLAUDE.md`, sessions, MCP servers, scheduled tasks, profile image, and isolated tool cwd. One workspace = one persona = one sandboxed working directory.
+- **MCP ecosystem** — plug any of the 5,400+ MCP servers in (24 curated one-click suggestions in the UI): GitHub, Tavily, Linear, Postgres, Playwright, etc.
 
 ## How it works
 
@@ -59,11 +71,12 @@ You can also switch models from the UI dropdown at runtime — no restart needed
 | `-m 35b` | Qwen 3.6 35B A3B UD-Q2_K_XL | ~13 GB | MoE, 3B active — fast for its size |
 | `-m 35b-iq1` | Qwen 3.6 35B A3B UD-IQ1_M | ~10 GB | MoE, smaller quant — fits 16 GB VRAM |
 | `-m 35b-agg` | Qwen 3.6 35B Aggressive IQ2_M (uncensored) | ~12 GB | MoE + vision mmproj (HauhauCS) |
+| `-m 27b-iq2` | Qwen 3.6 27B UD-IQ2_M | ~11 GB | Dense + vision, local `~/.lmstudio/models/unsloth/Qwen3.6-27B-GGUF/` |
 | `-m gemma` | Gemma 4 E4B Aggressive (uncensored) | ~5 GB | Custom — set `MODEL_GEMMA` |
 | `-m heretic` | Gemma 4 26B Heretic (uncensored) | ~13 GB | Custom — set `MODEL_HERETIC` + `_CTX` + `_NGL` |
 | `-m online` | Any OpenAI-compatible API | 0 GB | Cloud, needs API key |
 
-All local Qwen models include vision (mmproj). The model manager starts llama-server automatically and downloads models from HuggingFace on first run.
+Most local Qwen models include vision (mmproj). Exceptions: `35b` and `35b-iq1` (Qwen 3.6 A3B Q2/IQ1 — text-only on the `unsloth` repo); `35b-agg` ships its own mmproj. The model manager starts llama-server automatically and downloads models from HuggingFace on first run. When the active model has no mmproj, images in the history are silently stripped and replaced with a marker so llama-server doesn't 500 on a multimodal request.
 
 ### Custom models
 
@@ -276,7 +289,11 @@ Cron times use the **server's local time** (not UTC). Headless task execution au
 | Browser | `list_devices`, `capture_frame(source="webcam"\|"screen")` |
 | MCP | Anything the active agent's MCP servers expose, namespaced as `mcp__<server>__<tool>` |
 
-Read-only tools auto-execute. Dangerous tools (`write`, `edit`, `bash`, MCP tools) require user confirmation. The `bash` whitelist auto-approves safe commands (`ls`, `git status`, `pwd`, `cat`, etc.) plus any runner (`node`, `python`, `bash`) targeting `.skills/` paths inside the agent's own folder — so user-authored skill scripts run without confirm popups.
+Read-only tools auto-execute. Dangerous tools (`write`, `edit`, `bash`, MCP tools) require user confirmation. The `bash` whitelist auto-approves safe commands (`ls`, `pwd`, `echo`, `git status`, `git log`, `git diff`, etc. — `cat`/`head`/`tail` intentionally excluded, the model should use `read`) plus any runner (`node`, `python`, `bash`) targeting `.skills/` paths inside the agent's own folder — so user-authored skill scripts run without confirm popups.
+
+**Path sandbox:** file tools (`read`, `write`, `edit`, `multi_edit`, `ls`, `grep`, `glob`) and the server's file endpoints resolve every path through `src/path_security.py`, which rejects traversal via `..`, absolute paths, or prefix-sibling tricks. The agent can only touch files under its own `agents/<name>/` directory.
+
+**Reserved ports:** the `bash` tool blocks commands that bind to `8080` (llama-server — hijacking this kills your own LLM mid-turn) or `3040` (AINow itself). Dev servers should use `3000`, `5000`, `8000`, or `8888`.
 
 ### Web search
 
@@ -305,6 +322,14 @@ Tavily is the recommended default. If you need scraping/crawling instead of plai
 - **Repeated-failure breaker** — After 2 identical tool errors (keyed by tool name + error message), the system injects a "stop retrying, ask the user" directive. Prevents models from looping on the same broken command (e.g. missing API key).
 - **Edit tool line-range mode** — The `edit` tool supports replacing by line numbers (`line_start` + `line_end`) in addition to exact string matching. More reliable for models that paraphrase instead of copying exact text. Better error messages show candidate lines when `old_string` doesn't match.
 - **GPU pre-warming** — Whisper (STT) and Kokoro (TTS) models load at FastAPI startup on CUDA, so the first WebSocket connection doesn't pay the cold-start
+- **Skip-reload optimization** — `model_manager.start()` short-circuits when the requested model + vision + ctx + thinking flags match the currently-running state and llama-server is healthy. Reconnecting, toggling something back to its current value, or re-applying the same agent prefs no longer triggers a 3–7s restart.
+- **Vision fallback for non-mmproj models** — when the active local model has no mmproj (or online model has no known vision family), the streaming path strips `image_url` blocks from the conversation history and replaces them with `[image omitted: current model has no vision adapter]`. Prevents cascading 500s that would otherwise brick a session after switching to a text-only model.
+- **Skill-knowledge packs** — `src/skill_knowledge/*.md` files with YAML-ish frontmatter (`triggers:` substring/regex list + `tools:` tool-name list) are conditionally injected into the system prompt with priority-ranked selection: (1) error-recovery packs tied to the last-failed tool, (2) recency packs for recent tool calls, (3) intent packs matching the user message. A global token budget (default 500) prevents any one pack from crowding the prompt. Ships coding-oriented packs for pytest, file edits, git safety, debugging, binary search, sorting choice, DP, two-pointers, DFS/BFS, hash-vs-tree. Inspired by [little-coder](https://github.com/itayinbarr/little-coder).
+- **Tolerant tool-call argument parser** — before dispatch, the `function.arguments` JSON goes through progressive repairs: escape literal newlines inside strings, strip trailing commas, normalize single quotes to double, quote unquoted keys, balance missing braces/brackets, and as a last resort regex-extract the first bare `{…}` object. Dramatically improves tool-call reliability on 9B-class models.
+- **Task tools** (`task_create`, `task_update`, `task_get`, `task_list`) — the model can maintain a per-agent TODO list across multi-step work. Tasks persist to `agents/<name>/tasks.json`.
+- **GetDiagnostics tool** — `get_diagnostics(path)` runs the right linter / type-checker for the file's language (pyright → mypy → pyflakes for `.py`, tsc for `.ts`, node --check for `.js`, shellcheck for `.sh`, go vet for `.go`, cargo check for `.rs`). Empty output = no issues.
+- **Write-vs-Edit guard** — the `write` tool refuses to overwrite an existing file and tells the model to use `edit`/`multi_edit` instead. Pass `overwrite: true` for a deliberate full replacement. Eliminates a common category of accidental destruction.
+- **Thinking-budget enforcement** — reasoning models are capped at `AINOW_THINKING_BUDGET_SEC` seconds (default 120) of `<think>` content before a graceful stop is forced. Prevents small reasoning models from hanging indefinitely inside the reasoning block.
 
 ## UI Features
 
@@ -317,7 +342,8 @@ Tavily is the recommended default. If you need scraping/crawling instead of plai
 - **Toast Notifications** — Out-of-band events (scheduled task fired, etc.) surface as bottom-right toasts
 - **Model Picker** — Switch models from dropdown without restart (local + online). Switching to `online` kills the local llama-server to free GPU VRAM.
 - **Vision Toggle** — Checkbox next to the model picker. When unchecked, reloads llama-server without `--mmproj`, freeing ~1.2 GB VRAM per model. Setting is persisted per-agent.
-- **Context Size Dropdown** — `4k / 16k / 32k / 48k / 64k / 96k / 128k / 256k` presets next to the model picker. Changing it reloads llama-server with the new `-c` value. Persisted per-agent.
+- **Context Size Dropdown** — `4k / 16k / 32k / 48k / 64k / 96k / 128k / 256k / 512k / 1M` presets next to the model picker. Changing it reloads llama-server with the new `-c` value. Persisted per-agent.
+- **Send Button Gating** — the chat send button and Enter key are disabled until the WebSocket is connected **and** a model is loaded. The input placeholder explains the reason (connect / model loading / no model).
 - **Context Usage Badge** — `CTX <used>/<max>` pill in the toolbar with warn/danger thresholds at 60% / 85%. Updates live after each turn and resets on session clear.
 - **Voice Picker** — Browse Kokoro voices (server TTS) or browser voices (speechSynthesis)
 - **Stop Button** — Interrupt generation and TTS playback
@@ -330,6 +356,20 @@ Tavily is the recommended default. If you need scraping/crawling instead of plai
 - **Markdown Rendering** — Tables, headings, lists, code blocks (with `__` preserved in inline code spans), bold/italic
 - **Adaptive Echo Cancellation** — Tracks ambient echo level for smarter barge-in detection
 - **Mobile Sidebar** — Burger menu with tap-outside backdrop to close; auto-closes when picking a conversation
+
+## Security / Hardening
+
+AINow is designed to run on `localhost` by default. If you expose it beyond that, here's what the hardening layer does and how to configure it.
+
+- **Path sandbox** (`src/path_security.py`) — every file access (agent tools, `/api/files/*`, tar.gz import) goes through `resolve_within_base(base, rel)` which rejects traversal via `..`, absolute paths, prefix-sibling tricks, and control characters. Tests in `tests/test_tools_paths.py` + `tests/test_server_security.py`.
+- **Admin gate** on state-changing runtime endpoints (`/api/runtime`, `/api/runtime/settings`, `/api/eject-model`, `/api/models/{alias}`, `/api/agents/import`): allowed from `127.0.0.1`/`::1`/`localhost` unconditionally, or from remote clients that present a header `x-ainow-admin-token: $AINOW_ADMIN_TOKEN`.
+- **Debug routes** (`/trace/latest`, `/bench/ttft`, `/api/test-thinking`) return 404 unless `AINOW_ENABLE_DEBUG_ROUTES=1` is set (and the admin check still applies).
+- **Tar.gz import** caps: 64 MB archive, 5 MB per file, 2000 members max; symlinks and path-traversal entries rejected before extraction.
+- **Session ID validation** — every `session_id` coming from REST, WebSocket, or internal callers is matched against `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` before touching the filesystem.
+- **WS control-type whitelist** — unknown or malformed control messages are rejected with a warning instead of flowing through.
+- **Graceful drain** — on SIGTERM the server rejects new WS connections and waits for active turns to finish.
+
+Run the tests with `pytest tests/` (requires `pytest`; dependency-light, no heavy project imports needed).
 
 ## Setup
 
@@ -384,6 +424,18 @@ LOCAL_TTS_VOICE=1                 # Kokoro TTS
 # MODEL_MYMODEL=/path/to/gguf-directory
 # MODEL_MYMODEL_CTX=131072        # per-model context override
 # MODEL_MYMODEL_NGL=24            # per-model GPU layer offload
+
+# Hardening (see Security section)
+# AINOW_ADMIN_TOKEN=<long random>  # unlocks runtime endpoints from non-localhost
+# AINOW_ENABLE_DEBUG_ROUTES=1      # expose /trace/latest, /bench/ttft, /api/test-thinking
+# AINOW_TRACE_DIR=/var/log/ainow   # default: <tempfile.gettempdir()>/ainow
+
+# Reasoning / thinking cap for small reasoning models (default 120s)
+# AINOW_THINKING_BUDGET_SEC=120
+
+# TurboQuant KV cache compression (default: turbo3 = 3.8x smaller KV)
+# KV_CACHE_TYPE=turbo3             # turbo2/turbo3/turbo4 require a TurboQuant llama-server build
+                                   # falls back to q4_0 automatically on mainline binaries
 ```
 
 ### Optional system tools
@@ -401,7 +453,11 @@ src/
   state.py                       # Pure state machine
   types.py                       # Immutable state, events, actions
   log.py                         # Colored logging
-  tracer.py                      # Per-session JSON trace logging
+  tracer.py                      # Per-session JSON trace logging (AINOW_TRACE_DIR)
+  path_security.py               # is_within_base / resolve_within_base sandbox helpers
+  skill_knowledge/               # Conditionally-injected system-prompt packs
+    __init__.py                  # Loader: parses frontmatter, selects by triggers/tools
+    *.md                         # One guidance pack per file (testing, git, edits, …)
   static/
     index.html                   # Browser UI (single-file SPA)
     lib/                         # Silero VAD + ONNX runtime (offline)
@@ -421,6 +477,10 @@ src/
                                  #   (used by scheduler to inject prompts / push notifications)
     scheduler.py                 # Cron AI: per-agent scheduled tasks, headless execution,
                                  #   inject-into-active mode, run-now
+tests/                           # pytest suite (dependency-light)
+  test_tools_paths.py            # resolve_within_base against traversal
+  test_server_security.py        # is_within_base prefix-sibling check
+  test_model_manager.py          # _should_load_mmproj vision/audio-llm logic
 agents/                          # Per-agent workspaces (gitignored by default)
   default/
     CLAUDE.md
@@ -428,8 +488,96 @@ agents/                          # Per-agent workspaces (gitignored by default)
     sessions/*.json
     scheduled_tasks.json
     profile.jpg                  # optional avatar
-main.py                          # CLI entry point
+main.py                          # CLI entry point (web server)
+src/cli.py                       # `python -m src.cli` — headless CLI agent
 ```
+
+## CLI (headless mode)
+
+Use AINow as a local coding / chat agent without the browser — with a Rich-powered TUI.
+
+```bash
+# One-shot
+python -m src.cli "list all python files under src/ and tell me the biggest one"
+
+# Interactive REPL with startup banner + live status line
+python -m src.cli -i
+
+# Pick agent + model
+python -m src.cli -a donald-trump -m 27b-iq2 "write me a haiku"
+
+# Auto-approve every tool call (use with care)
+python -m src.cli --yolo "clean up the dead imports in src/services/llm.py"
+```
+
+### REPL slash commands
+
+| Command | What it does |
+|---|---|
+| `/help` | list all commands |
+| `/model [alias]` | switch model (e.g. `/model 27b-iq2`, `/model online`) or show current |
+| `/agent [name]` | switch the active agent or show current |
+| `/thinking` | toggle reasoning mode on/off (reloads llama-server) |
+| `/permissions [mode]` | switch between `yolo` and `confirm` at runtime |
+| `/context` | detailed context breakdown (used / max, msg count) |
+| `/history` | print the conversation history with message indices |
+| `/clear` | reset conversation history (keeps agent + model) |
+| `/compact` | force context compaction now |
+| `/save [id]` | save current session (auto-generated id if omitted) |
+| `/load <id>` | load a named session |
+| `/tree` | list saved sessions |
+| `/fork <idx>` | branch a new session from message index (see `/history`) |
+| `/skills` | list loaded skill-knowledge packs |
+| `/cwd` | show the tool working directory |
+| `/verbose` | toggle verbose mode |
+| `/quit` \| `/exit` | leave |
+
+### Inline shortcuts
+
+| Syntax | What it does |
+|---|---|
+| `!cmd` | run `cmd` in the shell, show output (no LLM call) |
+| `!!cmd` | run `cmd` silently (output not displayed) |
+| `@path/to/file` | inline-expand the file contents into the prompt (sandboxed to the agent's cwd) |
+
+### Visual feedback
+
+- **Startup banner** — shows model, backend (`llama.cpp` or `cloud`), permissions (`yolo` or `confirm`), context window, active agent. `--minimal-banner` for a one-line version.
+- **Persistent bottom toolbar** (when `prompt_toolkit` is installed) — always-visible status line at the bottom of the terminal showing model / agent / cwd / ctx% / permission mode / tool-output & thinking toggles / keybindings hint.
+- **Status line** (fallback mode) before every prompt — `context: 12K/32K (37%) · ~13 msgs until new session · model: …` in green (<70%) / yellow (70-85%) / red (>85%) zones.
+- **Tool-use flow** — `→ Read /path/to/file` followed by `✓ → 24 lines (862 chars)`. Errors show as `✗`. Ctrl+O expands each tool result inline.
+- **Thinking stream** — invisible by default; Ctrl+T toggles dimmed live-streaming of reasoning_content to stderr.
+- **Spinner** with random phrase while waiting for the first LLM token.
+- **Confirm dialog** — `? confirm bash rm -rf /tmp/foo — run? [y/N]` on stderr. Skipped entirely under `--yolo`.
+
+### Keyboard shortcuts (prompt_toolkit TUI)
+
+| Key | Action |
+|---|---|
+| `Ctrl+O` | toggle full tool-output expansion |
+| `Ctrl+T` | toggle live thinking-token display |
+| `Shift+Tab` | toggle reasoning mode (reloads llama-server) |
+| `Ctrl+L` | quick model picker |
+| `Ctrl+R` | reverse incremental history search |
+| `Ctrl+A` / `Ctrl+E` | jump to start / end of line |
+| `Ctrl+W` | delete word |
+| `Ctrl+U` | delete to start of line |
+| `↑` / `↓` | history navigation |
+| `Tab` | complete `@path/to/file` reference |
+| `Ctrl+D` | exit |
+
+File-path completion triggers as soon as you type `@` — the completer is sandboxed to the agent's workspace.
+
+### Notes
+
+The CLI reuses the same `LLMService`, tool registry, skill-knowledge packs, and
+agent workspace as the web UI — so your `CLAUDE.md` persona, MCP servers, tool
+permissions, and session history all apply. `llama-server` is started via the
+same auto-download / auto-build path `main.py` uses.
+
+Tokens stream to **stdout** so you can pipe them (`python -m src.cli "…" | tee out.txt`);
+Rich status lines, tool arrows, and confirm prompts go to **stderr**, so piping
+stdout stays clean.
 
 ## License
 
