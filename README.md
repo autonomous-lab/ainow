@@ -508,12 +508,14 @@ src/cli.py                       # `python -m src.cli` — headless CLI agent
 
 Use AINow as a local coding / chat agent without the browser — prompt_toolkit TUI with a persistent bottom toolbar, path completion, history, and slash commands.
 
+![AINow CLI](docs/cli-screenshot.png)
+
 ```bash
+# Start the interactive TUI (attaches to a running llama-server if the web UI is up)
+python -m src.cli -i
+
 # One-shot
 python -m src.cli "list all python files under src/ and tell me the biggest one"
-
-# Interactive REPL
-python -m src.cli -i
 
 # Pick agent + model
 python -m src.cli -a donald-trump -m 27b-iq2 "write me a haiku"
