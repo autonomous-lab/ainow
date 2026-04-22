@@ -156,6 +156,114 @@ Browser STT/TTS works fine but has limitations: Chrome's Web Speech API occasion
 | 24 GB | Qwen 27B or Qwen 3.6 35B A3B | `python main.py -m 27b` / `-m 35b` |
 | No GPU | Gemma 31B free (OpenRouter) | `python main.py -m online2` |
 
+## CLI (headless mode)
+
+Use AINow as a local coding / chat agent without the browser — prompt_toolkit TUI with a persistent bottom toolbar, path completion, history, and slash commands.
+
+![AINow CLI](docs/cli-screenshot.png)
+
+```bash
+# Start the interactive TUI (attaches to a running llama-server if the web UI is up)
+python -m src.cli -i
+
+# One-shot
+python -m src.cli "list all python files under src/ and tell me the biggest one"
+
+# Pick agent + model
+python -m src.cli -a donald-trump -m 27b-iq2 "write me a haiku"
+
+# Auto-approve every tool call (use with care)
+python -m src.cli --yolo "clean up the dead imports in src/services/llm.py"
+
+# One-line banner instead of the boxed panel
+python -m src.cli -i --minimal-banner
+
+# Take over the terminal (alt-screen, à la vim / less). Default is off so
+# you keep terminal scrollback; opt-in if you want a "full TUI" feel.
+python -m src.cli -i --altscreen
+```
+
+### Fast cold start
+
+On launch the CLI probes `http://127.0.0.1:8080/health` + `/v1/models`; if a llama-server is already running with the requested model (typically because the web UI is open), the CLI **attaches** to it instead of restarting. llama-server cold start is 3–7s, attach is <200ms. If the web UI is closed the CLI falls back to the same auto-download / auto-build path `main.py` uses.
+
+LLMService imports are deferred to the first turn to keep `--help` and the banner sub-second.
+
+### REPL slash commands
+
+| Command | What it does |
+|---|---|
+| `/help` | list all commands |
+| `/model [alias]` | switch model (e.g. `/model 27b-iq2`, `/model online`) or show current |
+| `/agent` | list all agents with active marker, model, lang, MCP + task counts |
+| `/agent <name>` | switch to an agent |
+| `/agent new <name>` | create a new agent |
+| `/agent delete <name>` | delete an agent (confirm required even under `--yolo`) |
+| `/agent edit [name]` | open `CLAUDE.md` in `$EDITOR` — re-read on next turn |
+| `/agent info [name]` | full agent detail (cwd, model, lang, voice, vision, MCP list, …) |
+| `/thinking` | toggle reasoning mode on/off (reloads llama-server) |
+| `/permissions [mode]` | switch between `yolo` and `confirm` at runtime |
+| `/context` | detailed context breakdown (used / max, msg count) |
+| `/history` | print conversation history with message indices |
+| `/clear` | reset conversation history (keeps agent + model) |
+| `/compact` | force context compaction now |
+| `/save [id]` | save current session (auto-generated id if omitted) |
+| `/load <id>` | load a named session |
+| `/tree` | list saved sessions |
+| `/fork <idx>` | branch a new session from message index (see `/history`) |
+| `/skills` | list loaded skill-knowledge packs with their triggers |
+| `/cwd` | show the tool working directory |
+| `/verbose` | toggle verbose mode |
+| `/quit` \| `/exit` | leave |
+
+### Inline shortcuts
+
+| Syntax | What it does |
+|---|---|
+| `!cmd` | run `cmd` in the shell, show output (no LLM call) |
+| `!!cmd` | run `cmd` silently (output not displayed) |
+| `@path/to/file` | inline-expand the file contents into the prompt (sandboxed to the agent's cwd) |
+
+Absolute image paths pasted into the prompt (`C:\…\pic.jpg`, `/home/user/photo.png`, quoted or bare) are **auto-attached as vision input** — no need to drag/drop.
+
+### Visual feedback
+
+- **Startup banner** — shows model, backend (`llama.cpp` or `cloud`), permissions (`yolo` or `confirm`), context window, active agent. `--minimal-banner` for a one-line version.
+- **Persistent bottom toolbar** (when `prompt_toolkit` is installed) — always-visible status line at the bottom of the terminal showing cwd + git branch + agent, then model / ctx% / permissions right-aligned.
+- **Tool-use flow** — `→ Read /path/to/file` followed by `✓ → 24 lines (862 chars)`. Errors show as `✗`. Ctrl+O expands each tool result inline.
+- **Thinking stream** — invisible by default; Ctrl+T toggles dimmed live-streaming of reasoning_content to stderr.
+- **Confirm dialog** — `? confirm bash rm -rf /tmp/foo — run? [y/N]` on stderr. Skipped entirely under `--yolo`.
+
+### Keyboard shortcuts (prompt_toolkit TUI)
+
+| Key | Action |
+|---|---|
+| `Ctrl+O` | toggle full tool-output expansion |
+| `Ctrl+T` | toggle live thinking-token display |
+| `Shift+Tab` | toggle reasoning mode — **two-press confirm** (5s window) to avoid an accidental llama-server reload |
+| `Ctrl+L` | quick model picker |
+| `Ctrl+C` during a turn | first press signals graceful stop, second aborts hard |
+| `Ctrl+R` | reverse incremental history search |
+| `Ctrl+A` / `Ctrl+E` | jump to start / end of line |
+| `Ctrl+W` | delete word |
+| `Ctrl+U` | delete to start of line |
+| `↑` / `↓` | history navigation (persisted in `~/.ainow_cli_history`) |
+| `Tab` | complete `@path/to/file` reference |
+| `Ctrl+D` | exit |
+
+File-path completion triggers as soon as you type `@` — the completer is sandboxed to the agent's workspace.
+
+### Notes
+
+The CLI reuses the same `LLMService`, tool registry, skill-knowledge packs, and
+agent workspace as the web UI — so your `CLAUDE.md` persona, MCP servers, tool
+permissions, and session history all apply. `llama-server` is started via the
+same auto-download / auto-build path `main.py` uses.
+
+Tokens stream to **stdout** so you can pipe them (`python -m src.cli "…" | tee out.txt`);
+Rich status lines, tool arrows, and confirm prompts go to **stderr**, so piping
+stdout stays clean.
+
 ## Agents
 
 Each agent is a self-contained workspace at `agents/<name>/`:
@@ -503,114 +611,6 @@ agents/                          # Per-agent workspaces (gitignored by default)
 main.py                          # CLI entry point (web server)
 src/cli.py                       # `python -m src.cli` — headless CLI agent
 ```
-
-## CLI (headless mode)
-
-Use AINow as a local coding / chat agent without the browser — prompt_toolkit TUI with a persistent bottom toolbar, path completion, history, and slash commands.
-
-![AINow CLI](docs/cli-screenshot.png)
-
-```bash
-# Start the interactive TUI (attaches to a running llama-server if the web UI is up)
-python -m src.cli -i
-
-# One-shot
-python -m src.cli "list all python files under src/ and tell me the biggest one"
-
-# Pick agent + model
-python -m src.cli -a donald-trump -m 27b-iq2 "write me a haiku"
-
-# Auto-approve every tool call (use with care)
-python -m src.cli --yolo "clean up the dead imports in src/services/llm.py"
-
-# One-line banner instead of the boxed panel
-python -m src.cli -i --minimal-banner
-
-# Take over the terminal (alt-screen, à la vim / less). Default is off so
-# you keep terminal scrollback; opt-in if you want a "full TUI" feel.
-python -m src.cli -i --altscreen
-```
-
-### Fast cold start
-
-On launch the CLI probes `http://127.0.0.1:8080/health` + `/v1/models`; if a llama-server is already running with the requested model (typically because the web UI is open), the CLI **attaches** to it instead of restarting. llama-server cold start is 3–7s, attach is <200ms. If the web UI is closed the CLI falls back to the same auto-download / auto-build path `main.py` uses.
-
-LLMService imports are deferred to the first turn to keep `--help` and the banner sub-second.
-
-### REPL slash commands
-
-| Command | What it does |
-|---|---|
-| `/help` | list all commands |
-| `/model [alias]` | switch model (e.g. `/model 27b-iq2`, `/model online`) or show current |
-| `/agent` | list all agents with active marker, model, lang, MCP + task counts |
-| `/agent <name>` | switch to an agent |
-| `/agent new <name>` | create a new agent |
-| `/agent delete <name>` | delete an agent (confirm required even under `--yolo`) |
-| `/agent edit [name]` | open `CLAUDE.md` in `$EDITOR` — re-read on next turn |
-| `/agent info [name]` | full agent detail (cwd, model, lang, voice, vision, MCP list, …) |
-| `/thinking` | toggle reasoning mode on/off (reloads llama-server) |
-| `/permissions [mode]` | switch between `yolo` and `confirm` at runtime |
-| `/context` | detailed context breakdown (used / max, msg count) |
-| `/history` | print conversation history with message indices |
-| `/clear` | reset conversation history (keeps agent + model) |
-| `/compact` | force context compaction now |
-| `/save [id]` | save current session (auto-generated id if omitted) |
-| `/load <id>` | load a named session |
-| `/tree` | list saved sessions |
-| `/fork <idx>` | branch a new session from message index (see `/history`) |
-| `/skills` | list loaded skill-knowledge packs with their triggers |
-| `/cwd` | show the tool working directory |
-| `/verbose` | toggle verbose mode |
-| `/quit` \| `/exit` | leave |
-
-### Inline shortcuts
-
-| Syntax | What it does |
-|---|---|
-| `!cmd` | run `cmd` in the shell, show output (no LLM call) |
-| `!!cmd` | run `cmd` silently (output not displayed) |
-| `@path/to/file` | inline-expand the file contents into the prompt (sandboxed to the agent's cwd) |
-
-### Visual feedback
-
-- **Startup banner** — shows model, backend (`llama.cpp` or `cloud`), permissions (`yolo` or `confirm`), context window, active agent. `--minimal-banner` for a one-line version.
-- **Persistent bottom toolbar** (when `prompt_toolkit` is installed) — always-visible status line at the bottom of the terminal showing model / agent / cwd / ctx% / permission mode / tool-output & thinking toggles / keybindings hint.
-- **Status line** (fallback mode) before every prompt — `context: 12K/32K (37%) · ~13 msgs until new session · model: …` in green (<70%) / yellow (70-85%) / red (>85%) zones.
-- **Tool-use flow** — `→ Read /path/to/file` followed by `✓ → 24 lines (862 chars)`. Errors show as `✗`. Ctrl+O expands each tool result inline.
-- **Thinking stream** — invisible by default; Ctrl+T toggles dimmed live-streaming of reasoning_content to stderr.
-- **Spinner** with random phrase while waiting for the first LLM token.
-- **Confirm dialog** — `? confirm bash rm -rf /tmp/foo — run? [y/N]` on stderr. Skipped entirely under `--yolo`.
-
-### Keyboard shortcuts (prompt_toolkit TUI)
-
-| Key | Action |
-|---|---|
-| `Ctrl+O` | toggle full tool-output expansion |
-| `Ctrl+T` | toggle live thinking-token display |
-| `Shift+Tab` | toggle reasoning mode — **two-press confirm** (5s window) to avoid an accidental llama-server reload |
-| `Ctrl+L` | quick model picker |
-| `Ctrl+C` during a turn | first press signals graceful stop, second aborts hard |
-| `Ctrl+R` | reverse incremental history search |
-| `Ctrl+A` / `Ctrl+E` | jump to start / end of line |
-| `Ctrl+W` | delete word |
-| `Ctrl+U` | delete to start of line |
-| `↑` / `↓` | history navigation (persisted in `~/.ainow_cli_history`) |
-| `Tab` | complete `@path/to/file` reference |
-| `Ctrl+D` | exit |
-
-File-path completion triggers as soon as you type `@` — the completer is sandboxed to the agent's workspace.
-
-### Notes
-
-The CLI reuses the same `LLMService`, tool registry, skill-knowledge packs, and
-agent workspace as the web UI — so your `CLAUDE.md` persona, MCP servers, tool
-permissions, and session history all apply. `llama-server` is started via the
-same auto-download / auto-build path `main.py` uses.
-
-Tokens stream to **stdout** so you can pipe them (`python -m src.cli "…" | tee out.txt`);
-Rich status lines, tool arrows, and confirm prompts go to **stderr**, so piping
-stdout stays clean.
 
 ## License
 
