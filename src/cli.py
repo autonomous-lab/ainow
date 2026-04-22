@@ -360,6 +360,12 @@ class CLIState:
         # _build_system_prompt (which shells out to git) on every key event.
         self.cached_context_used: int = 0
         self.cached_context_max: int = 0
+        # Session-wide streaming stats exposed in the bottom toolbar and
+        # summarized at end-of-turn.
+        self.session_total_tokens: int = 0
+        self.session_total_seconds: float = 0.0
+        self.last_turn_tokens: int = 0
+        self.last_turn_seconds: float = 0.0
         # Monotonic deadline after which a pending Shift+Tab (thinking toggle)
         # is no longer armed. 0 = not armed. First press arms, second press
         # within the window actually toggles (reloads llama-server).
@@ -850,7 +856,15 @@ async def _handle_slash(state: "CLIState", line: str) -> bool:
     if cmd == "clear":
         if state.llm is not None:
             state.llm._history.clear()
-        console.print(Text.from_markup("[green]✓[/green] history cleared"))
+        # Reset session-wide stats so the toolbar matches the fresh history.
+        state.session_total_tokens = 0
+        state.session_total_seconds = 0.0
+        state.last_turn_tokens = 0
+        state.last_turn_seconds = 0.0
+        # Wipe the scrollback so the user visually gets a fresh session too.
+        sys.stdout.write("\033[2J\033[3J\033[H")
+        sys.stdout.flush()
+        console.print(Text.from_markup("[green]✓[/green] history + screen cleared"))
         return True
 
     if cmd == "compact":
@@ -1022,6 +1036,9 @@ async def _run_one_turn(state: CLIState, prompt: str) -> None:
     global STREAMED_TOKENS_IN_TURN
     state._ensure_llm()
     STREAMED_TOKENS_IN_TURN = 0
+    import time as _time
+    _turn_start = _time.monotonic()
+    _first_token_at: list[float] = []  # mutable via closure
 
     done = asyncio.Event()
 
@@ -1083,6 +1100,19 @@ async def _run_one_turn(state: CLIState, prompt: str) -> None:
     if STREAMED_TOKENS_IN_TURN > 0:
         sys.stdout.write("\n")
         sys.stdout.flush()
+
+    # End-of-turn stats: token count, elapsed, tok/s. Running totals feed the
+    # bottom toolbar (session: … tok · avg … tok/s).
+    _elapsed = _time.monotonic() - _turn_start
+    if STREAMED_TOKENS_IN_TURN > 0 and _elapsed > 0:
+        _tps = STREAMED_TOKENS_IN_TURN / _elapsed
+        state.last_turn_tokens = STREAMED_TOKENS_IN_TURN
+        state.last_turn_seconds = _elapsed
+        state.session_total_tokens += STREAMED_TOKENS_IN_TURN
+        state.session_total_seconds += _elapsed
+        console.print(Text.from_markup(
+            f"[dim]{STREAMED_TOKENS_IN_TURN} tok · {_elapsed:.1f}s · {_tps:.1f} tok/s[/dim]"
+        ))
 
 
 def _read_prompt_line() -> Optional[str]:

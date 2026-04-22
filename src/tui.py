@@ -243,14 +243,24 @@ if _HAS_PTK:
             line2_parts += [(DIM, "  ·  agent "), (CYAN, s.agent_name)]
 
             # Line 3: ctx + perm on the left, model · reason right-aligned
-            left_ctx = f"ctx {pct}%/{mx_fmt}"
-            left_perm = perm
             left_parts = [
                 (DIM, "ctx "),
                 (pct_color, f"{pct}%/{mx_fmt}"),
                 (DIM, "  ·  "),
                 (perm_color, perm),
             ]
+            # Session-wide token stats: total tokens streamed, average tok/s.
+            sess_tok = getattr(s, "session_total_tokens", 0)
+            sess_sec = getattr(s, "session_total_seconds", 0.0)
+            if sess_tok > 0 and sess_sec > 0:
+                avg_tps = sess_tok / sess_sec
+                sess_fmt = f"{sess_tok}" if sess_tok < 1000 else f"{sess_tok // 1000}.{(sess_tok % 1000) // 100}k"
+                left_parts += [
+                    (DIM, "  ·  session "),
+                    (WHITE, f"{sess_fmt} tok"),
+                    (DIM, " @ "),
+                    (WHITE, f"{avg_tps:.1f} tok/s"),
+                ]
             right_parts = [
                 (CYAN + " bold", model_name),
                 (DIM, "  ·  "),
