@@ -471,6 +471,20 @@ class CLIState:
                 Text.assemble(("[auto] ", "dim yellow"), (f"approved {name}", "dim"))
             )
             return True
+        # In Textual mode, sys.stdin is owned by the App — calling readline()
+        # would deadlock the event loop. Route the prompt through a ModalScreen.
+        if _TEXTUAL_APP is not None:
+            try:
+                detail = _short_arg(args)
+            except Exception:
+                detail = ""
+            try:
+                return await _TEXTUAL_APP.confirm_tool(name, detail)
+            except Exception as e:
+                # Fall through to stdin only as a last resort — but at this
+                # point Textual is likely broken anyway.
+                console.print(Text.from_markup(f"[red]confirm modal failed: {e}[/red]"))
+                return False
         return _prompt_confirm(name, args)
 
     def _ensure_llm(self):
@@ -551,10 +565,18 @@ async def _handle_slash(state: "CLIState", line: str) -> bool:
         raise SystemExit(0)
 
     if cmd == "help":
+        # In Textual mode, surface a navigable modal instead of a static panel.
+        if _TEXTUAL_APP is not None:
+            try:
+                _TEXTUAL_APP.show_help_modal()
+                return True
+            except Exception:
+                pass  # fall back to plain panel below
         console.print(Panel(
             Text.from_markup(
                 "[bold]Session[/bold]\n"
                 "  [cyan]/help[/cyan]                show this message\n"
+                "  [cyan]/config[/cyan]              open the model/vision/thinking/ctx config screen\n"
                 "  [cyan]/quit[/cyan] · [cyan]/exit[/cyan]         leave\n"
                 "\n"
                 "[bold]Model / agent[/bold]\n"
@@ -592,6 +614,20 @@ async def _handle_slash(state: "CLIState", line: str) -> bool:
             ),
             border_style="dim",
             padding=(0, 1),
+        ))
+        return True
+
+    if cmd == "config":
+        if _TEXTUAL_APP is not None:
+            try:
+                _TEXTUAL_APP.show_config_modal()
+                return True
+            except Exception as e:
+                console.print(Text.from_markup(f"[red]config modal failed: {e}[/red]"))
+                return True
+        console.print(Text.from_markup(
+            "[dim]/config is only available in the Textual TUI "
+            "(run with `python -m src.cli -i --textual`)[/dim]"
         ))
         return True
 
@@ -763,11 +799,25 @@ async def _handle_slash(state: "CLIState", line: str) -> bool:
         return True
 
     if cmd == "model":
+        from .services.model_manager import MODELS, MODEL_ALIASES, resolve_model_id
         if not rest:
-            console.print(Text.from_markup(f"[cyan]{state.model_label()}[/cyan]  [dim]({state.backend_label()})[/dim]"))
+            # No arg → show the full list of aliases with active marker + name.
+            try:
+                current_mid = resolve_model_id(state.model_alias)
+            except Exception:
+                current_mid = None
+            lines = []
+            for alias, mid in sorted(MODEL_ALIASES.items()):
+                cfg = MODELS.get(mid, {})
+                is_active = (alias == state.model_alias or mid == current_mid)
+                mark = "[green]→[/green]" if is_active else " "
+                style = "cyan bold" if is_active else "cyan"
+                tag = " [dim](online)[/dim]" if cfg.get("online") else ""
+                lines.append(f" {mark} [{style}]{alias:<12}[/{style}]  {cfg.get('name', mid)}{tag}")
+            body = Text.from_markup("\n".join(lines) + "\n\n[dim]type /model <alias> to switch[/dim]")
+            console.print(Panel(body, title=f"models ({len(MODEL_ALIASES)})", border_style="dim", padding=(0, 1)))
             return True
         # Switch
-        from .services.model_manager import MODELS, resolve_model_id
         try:
             mid = resolve_model_id(rest)
         except ValueError as e:
@@ -1550,8 +1600,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-banner", action="store_true", help="Skip the startup banner.")
     p.add_argument("--minimal-banner", action="store_true", help="One-line banner instead of the boxed panel.")
     p.add_argument("--altscreen", action="store_true", help="Use an alternate screen buffer (TUI owns the terminal). Default: off — keeps normal scrollback so you can scroll back through the conversation.")
-    p.add_argument("--fullscreen", action="store_true", help="Use the experimental full-screen prompt_toolkit Application (chat area + persistent toolbar). Known to flicker / drift on Windows conhost; default is the line-based REPL.")
-    p.add_argument("--textual", action="store_true", help="Use the Textual-based TUI (recommended for full-screen experience — reliable rendering on Windows).")
+    p.add_argument("--fullscreen", action="store_true", help="Use the experimental full-screen prompt_toolkit Application (chat area + persistent toolbar). Known to flicker / drift on Windows conhost; default is the Textual TUI.")
+    p.add_argument("--textual", action="store_true", default=True, help="Use the Textual-based TUI (default — reliable rendering on Windows).")
+    p.add_argument("--no-textual", dest="textual", action="store_false", help="Disable the Textual TUI and fall back to the line-based REPL.")
     p.add_argument(
         "--yolo", "--auto-approve",
         dest="auto_approve",

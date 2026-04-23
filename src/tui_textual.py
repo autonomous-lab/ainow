@@ -26,15 +26,55 @@ from typing import Awaitable, Callable, Optional
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.containers import Container, Vertical, VerticalScroll
+    from textual.containers import Container, Horizontal, Vertical, VerticalScroll
     from textual.reactive import reactive
-    from textual.widgets import Footer, Header, Input, Static
+    from textual.screen import ModalScreen
+    from textual.suggester import Suggester
+    from textual.widgets import (
+        Button,
+        Footer,
+        Header,
+        Input,
+        Label,
+        ListItem,
+        ListView,
+        Select,
+        Static,
+        Switch,
+    )
     _HAS_TEXTUAL = True
 except ImportError:
     _HAS_TEXTUAL = False
 
 
 HAS_TEXTUAL = _HAS_TEXTUAL
+
+
+# ─── Slash-command registry ───────────────────────────────────────────────
+# (name, args_hint, description). Used by:
+#   * SlashSuggester  → ghost-text autocomplete on the Input
+#   * HelpModal       → arrow-navigable list
+SLASH_COMMANDS: list[tuple[str, str, str]] = [
+    ("/help", "", "show commands in an arrow-navigable list"),
+    ("/config", "", "open the model/vision/thinking/ctx config screen"),
+    ("/model", "[alias]", "switch model or list available ones"),
+    ("/agent", "[sub]", "list agents or switch (/agent <name>)"),
+    ("/thinking", "", "toggle reasoning mode (reloads llama-server)"),
+    ("/permissions", "[yolo|confirm]", "switch permission mode"),
+    ("/context", "", "detailed context-usage breakdown"),
+    ("/history", "", "print conversation history"),
+    ("/clear", "", "wipe history + screen"),
+    ("/compact", "", "force a context compaction"),
+    ("/save", "[id]", "save current session"),
+    ("/load", "<id>", "load a named session"),
+    ("/tree", "", "list saved sessions"),
+    ("/fork", "<idx>", "branch a new session from a message index"),
+    ("/skills", "", "list loaded skill-knowledge packs"),
+    ("/cwd", "", "show the current tool working directory"),
+    ("/verbose", "", "toggle verbose mode (raw thinking tokens)"),
+    ("/quit", "", "leave AINow"),
+    ("/exit", "", "leave AINow"),
+]
 
 
 # Cached git-branch lookup — same as in tui_fullscreen
@@ -146,6 +186,334 @@ if _HAS_TEXTUAL:
             ch = self.FRAMES[self._frame]
             dots = "." * ((self._frame // 3) % 4)
             self.update(f"[yellow]{ch}[/yellow] [italic dim]{self._phrase}{dots}[/italic dim]")
+
+
+    class SlashSuggester(Suggester):
+        """Ghost-text suggester for `/` commands on the Input widget.
+
+        Matches against the SLASH_COMMANDS registry. Only fires when the
+        value starts with `/` and there's no trailing space (i.e. user is
+        still typing the command name, not its argument).
+        """
+
+        def __init__(self) -> None:
+            super().__init__(case_sensitive=False, use_cache=False)
+
+        async def get_suggestion(self, value: str) -> Optional[str]:
+            if not value.startswith("/"):
+                return None
+            if " " in value:
+                return None
+            prefix = value.lower()
+            for name, _hint, _desc in SLASH_COMMANDS:
+                if name.lower().startswith(prefix) and name.lower() != prefix:
+                    return name
+            return None
+
+
+    class HelpModal(ModalScreen):
+        """Arrow-navigable list of slash commands. Enter prefills the input,
+        Escape dismisses. Clicking a row also selects it."""
+
+        DEFAULT_CSS = """
+        HelpModal {
+            align: center middle;
+        }
+        HelpModal > Vertical {
+            background: $surface;
+            border: heavy $primary-lighten-3;
+            width: 80;
+            max-width: 90%;
+            height: auto;
+            max-height: 80%;
+            padding: 1 2;
+        }
+        HelpModal #help-title {
+            text-style: bold;
+            color: $primary;
+            margin: 0 0 1 0;
+        }
+        HelpModal ListView {
+            height: auto;
+            max-height: 20;
+            background: $surface;
+            border: none;
+        }
+        HelpModal ListItem {
+            padding: 0 1;
+        }
+        HelpModal ListItem.--highlight {
+            background: $primary 30%;
+        }
+        HelpModal #help-hint {
+            margin: 1 0 0 0;
+            color: $text-muted;
+        }
+        """
+
+        BINDINGS = [
+            Binding("escape", "dismiss_modal", "Close", priority=True),
+            Binding("q", "dismiss_modal", "Close", show=False),
+        ]
+
+        def compose(self) -> ComposeResult:
+            items: list[ListItem] = []
+            for name, hint, desc in SLASH_COMMANDS:
+                label = Static(
+                    f"[cyan bold]{name:<14}[/cyan bold] [dim]{hint:<18}[/dim] {desc}",
+                    markup=True,
+                )
+                li = ListItem(label)
+                li.cmd_name = name  # attach so on_list_view_selected can read it
+                items.append(li)
+            with Vertical():
+                yield Static("AINow — slash commands", id="help-title", markup=True)
+                yield ListView(*items, id="help-list")
+                yield Static(
+                    "[dim]↑/↓ navigate · Enter to prefill · Esc to close[/dim]",
+                    id="help-hint",
+                    markup=True,
+                )
+
+        def on_mount(self) -> None:
+            try:
+                self.query_one("#help-list", ListView).focus()
+            except Exception:
+                pass
+
+        def action_dismiss_modal(self) -> None:
+            self.dismiss(None)
+
+        def on_list_view_selected(self, event: ListView.Selected) -> None:
+            name = getattr(event.item, "cmd_name", None)
+            self.dismiss(name)
+
+
+    class ConfirmModal(ModalScreen):
+        """Yes/No modal for dangerous tool-call approval in confirm mode.
+
+        CRITICAL: this replaces the blocking `sys.stdin.readline()` path from
+        cli.py, which freezes the Textual event loop (Textual owns stdin in
+        alt-screen, so the REPL can never receive the keypress and even
+        Ctrl+C can't get through). The modal dismisses with True/False which
+        the awaiting `CLIState.confirm` coroutine returns."""
+
+        DEFAULT_CSS = """
+        ConfirmModal {
+            align: center middle;
+        }
+        ConfirmModal > Vertical {
+            background: $surface;
+            border: heavy $warning;
+            width: 70;
+            max-width: 90%;
+            height: auto;
+            padding: 1 2;
+        }
+        ConfirmModal #cf-title {
+            text-style: bold;
+            color: $warning;
+            margin: 0 0 1 0;
+        }
+        ConfirmModal #cf-detail {
+            color: $text-muted;
+            margin: 0 0 1 0;
+        }
+        ConfirmModal #cf-buttons {
+            height: 3;
+            align-horizontal: right;
+            margin: 1 0 0 0;
+        }
+        ConfirmModal Button { margin: 0 0 0 1; }
+        """
+
+        # priority=True so the Screen-level Enter/y/n bindings intercept the
+        # key *before* the focused Button's own built-in enter→press binding
+        # runs. Otherwise Button swallows Enter and the dismiss(...) from the
+        # Pressed handler doesn't reliably fire through the modal.
+        BINDINGS = [
+            Binding("escape", "deny", "Deny", priority=True),
+            Binding("n", "deny", "No", show=False, priority=True),
+            Binding("y", "approve", "Yes", show=False, priority=True),
+            Binding("enter", "approve", "Approve", show=False, priority=True),
+        ]
+
+        def __init__(self, *, name: str, detail: str):
+            super().__init__()
+            self._name = name
+            self._detail = detail
+
+        def compose(self) -> ComposeResult:
+            with Vertical():
+                yield Static(
+                    f"? confirm tool call: [cyan bold]{self._name}[/cyan bold]",
+                    id="cf-title",
+                    markup=True,
+                )
+                yield Static(f"[dim]{self._detail}[/dim]", id="cf-detail", markup=True)
+                yield Static(
+                    "[dim]Enter / y = approve · Esc / n = deny[/dim]",
+                    markup=True,
+                )
+                with Horizontal(id="cf-buttons"):
+                    yield Button("Deny", id="cf-deny")
+                    yield Button("Approve", id="cf-approve", variant="warning")
+
+        # Intentionally do NOT focus the Approve button on mount — if it has
+        # focus, Textual routes Enter to its internal `press` binding, which
+        # competes with the Screen-level enter→approve binding and the result
+        # is flaky (the user reported "Enter does nothing, y works"). Leaving
+        # focus on the screen itself makes the priority bindings reliable.
+
+        def action_approve(self) -> None:
+            self.dismiss(True)
+
+        def action_deny(self) -> None:
+            self.dismiss(False)
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            self.dismiss(event.button.id == "cf-approve")
+
+
+    class ConfigModal(ModalScreen):
+        """One-shot model + vision + thinking + ctx config screen.
+
+        Dismisses with either None (cancel) or a dict describing the chosen
+        state — AINowApp applies it via model_manager.start() in a worker.
+        """
+
+        DEFAULT_CSS = """
+        ConfigModal {
+            align: center middle;
+        }
+        ConfigModal > Vertical {
+            background: $surface;
+            border: heavy $primary-lighten-3;
+            width: 78;
+            max-width: 90%;
+            height: auto;
+            padding: 1 2;
+        }
+        ConfigModal #cfg-title {
+            text-style: bold;
+            color: $primary;
+            margin: 0 0 1 0;
+        }
+        ConfigModal .row {
+            height: 3;
+            margin: 0 0 1 0;
+        }
+        ConfigModal .row Label {
+            width: 16;
+            padding: 1 1 0 0;
+        }
+        ConfigModal Select { width: 1fr; }
+        ConfigModal #cfg-buttons {
+            height: 3;
+            align-horizontal: right;
+            margin: 1 0 0 0;
+        }
+        ConfigModal Button { margin: 0 0 0 1; }
+        ConfigModal #cfg-hint {
+            color: $text-muted;
+        }
+        """
+
+        BINDINGS = [
+            Binding("escape", "dismiss_modal", "Cancel", priority=True),
+        ]
+
+        def __init__(self, *, current: dict):
+            super().__init__()
+            self._current = current
+
+        def compose(self) -> ComposeResult:
+            from .services.model_manager import MODEL_ALIASES, MODELS
+
+            model_options: list[tuple[str, str]] = []
+            for alias in sorted(MODEL_ALIASES.keys()):
+                mid = MODEL_ALIASES[alias]
+                cfg = MODELS.get(mid, {})
+                name = cfg.get("name", mid)
+                online = " (online)" if cfg.get("online") else ""
+                model_options.append((f"{alias:<12}  {name}{online}", alias))
+
+            ctx_choices = [
+                ("4K (4096)", "4096"),
+                ("8K (8192)", "8192"),
+                ("16K (16384)", "16384"),
+                ("32K (32768)", "32768"),
+                ("64K (65536)", "65536"),
+                ("128K (131072)", "131072"),
+            ]
+            cur_ctx = str(self._current.get("ctx", "") or "")
+            if cur_ctx and cur_ctx not in [v for _, v in ctx_choices]:
+                ctx_choices.append((f"current ({cur_ctx})", cur_ctx))
+
+            with Vertical():
+                yield Static("AINow — session config", id="cfg-title", markup=True)
+
+                with Horizontal(classes="row"):
+                    yield Label("model")
+                    yield Select(
+                        model_options,
+                        value=self._current.get("alias") or Select.BLANK,
+                        allow_blank=False,
+                        id="cfg-model",
+                    )
+
+                with Horizontal(classes="row"):
+                    yield Label("context")
+                    yield Select(
+                        ctx_choices,
+                        value=cur_ctx if cur_ctx else Select.BLANK,
+                        allow_blank=True,
+                        id="cfg-ctx",
+                    )
+
+                with Horizontal(classes="row"):
+                    yield Label("vision")
+                    yield Switch(value=bool(self._current.get("vision", True)), id="cfg-vision")
+
+                with Horizontal(classes="row"):
+                    yield Label("thinking")
+                    yield Switch(value=bool(self._current.get("thinking", False)), id="cfg-thinking")
+
+                yield Static(
+                    "[dim]Apply reloads llama-server with the new params. "
+                    "Esc to cancel.[/dim]",
+                    id="cfg-hint",
+                    markup=True,
+                )
+
+                with Horizontal(id="cfg-buttons"):
+                    yield Button("Cancel", id="cfg-cancel")
+                    yield Button("Apply", id="cfg-apply", variant="primary")
+
+        def action_dismiss_modal(self) -> None:
+            self.dismiss(None)
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            if event.button.id == "cfg-cancel":
+                self.dismiss(None)
+                return
+            if event.button.id == "cfg-apply":
+                model_sel = self.query_one("#cfg-model", Select).value
+                ctx_sel = self.query_one("#cfg-ctx", Select).value
+                vision = self.query_one("#cfg-vision", Switch).value
+                thinking = self.query_one("#cfg-thinking", Switch).value
+                try:
+                    ctx_val = int(ctx_sel) if ctx_sel and ctx_sel != Select.BLANK else None
+                except (TypeError, ValueError):
+                    ctx_val = None
+                if model_sel == Select.BLANK:
+                    model_sel = self._current.get("alias")
+                self.dismiss({
+                    "alias": model_sel,
+                    "ctx": ctx_val,
+                    "vision": bool(vision),
+                    "thinking": bool(thinking),
+                })
 
 
     class StatusBar(Static):
@@ -296,7 +664,11 @@ if _HAS_TEXTUAL:
         def compose(self) -> ComposeResult:
             yield VerticalScroll(id="chat")
             yield StatusBar(state=self.state)
-            yield Input(placeholder="Type a message, /help for commands, Ctrl+D to exit…", id="input")
+            yield Input(
+                placeholder="Type a message, /help for commands, Ctrl+D to exit…",
+                id="input",
+                suggester=SlashSuggester(),
+            )
 
         async def on_mount(self) -> None:
             # Banner as the first message.
@@ -535,6 +907,175 @@ if _HAS_TEXTUAL:
 
         async def action_pick_model(self) -> None:
             await self._keyshortcut("pick_model")
+
+        # --- modal helpers -----------------------------------------------
+
+        def show_help_modal(self) -> None:
+            """Open the arrow-navigable /help modal. On selection, prefill
+            the selected command into the input (with trailing space if the
+            command takes args) and focus it."""
+
+            def _on_close(choice):
+                if not choice:
+                    return
+                try:
+                    inp = self.query_one("#input", Input)
+                except Exception:
+                    return
+                # Prefill with trailing space when the command takes args
+                takes_args = False
+                for name, hint, _desc in SLASH_COMMANDS:
+                    if name == choice:
+                        takes_args = bool(hint.strip())
+                        break
+                inp.value = choice + (" " if takes_args else "")
+                try:
+                    inp.cursor_position = len(inp.value)
+                except Exception:
+                    pass
+                inp.focus()
+
+            self.push_screen(HelpModal(), _on_close)
+
+        async def confirm_tool(self, name: str, detail: str) -> bool:
+            """Await a user approval via a Textual modal. Called from
+            CLIState.confirm when `_TEXTUAL_APP` is active — replaces the
+            blocking sys.stdin.readline() path that would deadlock the app."""
+            result = await self.push_screen_wait(ConfirmModal(name=name, detail=detail))
+            return bool(result)
+
+        def show_config_modal(self) -> None:
+            """Open the unified /config modal. On apply, route the chosen
+            model/vision/thinking/ctx through model_manager in a worker so
+            the UI thread doesn't block on the ~3-7s llama-server reload."""
+            current = self._current_config_snapshot()
+
+            def _on_close(result):
+                if not result:
+                    return
+                self.run_worker(self._apply_config(result), exclusive=True)
+
+            self.push_screen(ConfigModal(current=current), _on_close)
+
+        def _current_config_snapshot(self) -> dict:
+            """Read current alias/ctx/vision/thinking from state + model_manager."""
+            alias = getattr(self.state, "model_alias", None)
+            try:
+                from .services.model_manager import model_manager as _mm
+                ctx = _mm.get_context_size()
+                vision = _mm.vision_enabled
+                thinking = _mm.thinking_enabled
+            except Exception:
+                ctx, vision, thinking = 0, True, False
+            return {
+                "alias": alias,
+                "ctx": ctx or None,
+                "vision": bool(vision),
+                "thinking": bool(thinking),
+            }
+
+        async def _apply_config(self, cfg: dict) -> None:
+            """Apply a ConfigModal result — switch model (if changed) and
+            reload llama-server with the requested vision/thinking/ctx."""
+            from .services.model_manager import (
+                MODELS,
+                MODEL_ALIASES,
+                model_manager,
+                resolve_model_id,
+            )
+            from .services import agents as agent_store
+
+            alias = cfg.get("alias")
+            ctx_val = cfg.get("ctx")
+            vision = bool(cfg.get("vision", True))
+            thinking = bool(cfg.get("thinking", False))
+
+            if not alias:
+                self.log_error("config: no model selected")
+                return
+
+            try:
+                mid = resolve_model_id(alias)
+            except Exception as e:
+                self.log_error(f"config: {e}")
+                return
+
+            model_cfg = MODELS.get(mid, {})
+            self.log_system(
+                f"[cyan]applying config[/cyan] · model=[bold]{alias}[/bold] · "
+                f"ctx={ctx_val or 'default'} · vision={'on' if vision else 'off'} · "
+                f"thinking={'on' if thinking else 'off'}",
+                style="dim",
+            )
+
+            if model_cfg.get("online"):
+                # Online backends have no --mmproj / --reasoning knobs; just
+                # re-point the client at the OpenRouter-compatible endpoint.
+                import os as _os
+                api_key = _os.getenv(model_cfg["api_key_env"], "")
+                if not api_key:
+                    self.log_error(f"missing {model_cfg['api_key_env']}")
+                    return
+                _os.environ["LLM_BASE_URL"] = model_cfg["base_url"]
+                _os.environ["LLM_API_KEY"] = api_key
+                _os.environ["LLM_MODEL"] = model_cfg["model_id"]
+                self.state.model_alias = alias
+                if self.state.llm is not None:
+                    self.state.llm.switch_model(
+                        _os.environ["LLM_BASE_URL"],
+                        _os.environ["LLM_API_KEY"],
+                        _os.environ["LLM_MODEL"],
+                    )
+                self.log_system(
+                    f"[green]✓[/green] switched to [cyan]{self.state.model_label()}[/cyan]",
+                    style="",
+                )
+                self._refresh_status_now()
+                return
+
+            # Local backend — reload llama-server with the new knobs
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: model_manager.start(mid, vision, ctx_val, thinking),
+                )
+            except Exception as e:
+                self.log_error(f"config reload failed: {e}")
+                return
+
+            # Persist preferences for the active agent
+            try:
+                patch = {
+                    "model": alias,
+                    "vision_enabled": vision,
+                    "thinking_enabled": thinking,
+                }
+                if ctx_val is not None:
+                    patch["ctx"] = int(ctx_val)
+                agent_store.update_preferences(agent_store.get_active(), patch)
+            except Exception:
+                pass
+
+            # Re-point the LLMService at the (possibly re-bound) llama endpoint
+            import os as _os
+            self.state.model_alias = alias
+            if self.state.llm is not None:
+                self.state.llm.switch_model(
+                    _os.environ.get("LLM_BASE_URL", "http://127.0.0.1:8080/v1"),
+                    _os.environ.get("LLM_API_KEY", "not-needed"),
+                    _os.environ.get("LLM_MODEL", mid),
+                )
+            self.log_system(
+                f"[green]✓[/green] config applied · [cyan]{self.state.model_label()}[/cyan]",
+                style="",
+            )
+            self._refresh_status_now()
+
+        def _refresh_status_now(self) -> None:
+            try:
+                self.query_one(StatusBar).refresh_status()
+            except Exception:
+                pass
 
         def action_scroll_up(self) -> None:
             try:
