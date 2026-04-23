@@ -213,13 +213,34 @@ if _HAS_TEXTUAL:
             if not text:
                 event.stop()
                 return
+            self._insert_flattened(text)
+            event.stop()
+
+        def on_click(self, event) -> None:
+            """Right-click pastes from the system clipboard.
+
+            Textual captures mouse events before Windows Terminal's native
+            right-click-to-paste can fire, so we have to implement it
+            ourselves. Read the clipboard via pyperclip and insert the
+            content flattened (newlines → spaces) like bracketed paste."""
+            if getattr(event, "button", 0) != 3:
+                return
+            try:
+                import pyperclip
+                text = pyperclip.paste()
+            except Exception:
+                return
+            if text:
+                self._insert_flattened(text)
+            event.stop()
+
+        def _insert_flattened(self, text: str) -> None:
             # Collapse CRLF/CR/LF and runs of whitespace so "\n\n" doesn't
             # become a visible double-space and indented content stays tidy.
             import re as _re
             flat = _re.sub(r"\s+", " ", text).strip()
             if flat:
                 self.insert_text_at_cursor(flat)
-            event.stop()
 
 
     class SlashSuggester(Suggester):

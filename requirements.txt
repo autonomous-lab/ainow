@@ -13,4 +13,5 @@ faster-whisper>=1.1.0
 onnxruntime>=1.16.0
 mcp>=1.0.0
 croniter>=2.0.0
+pyperclip>=1.8.0
 # audioop-lts>=0.2.1  # Only needed for Python 3.13+ (audioop is built-in for earlier versions)
