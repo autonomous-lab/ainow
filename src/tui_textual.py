@@ -190,14 +190,36 @@ if _HAS_TEXTUAL:
 
 
     class AINowInput(Input):
-        """Input subclass that accepts suggester ghost text via Tab as well
-        as the default Right arrow. `cursor_right` handles both: if the
-        cursor is at end and there's a pending suggestion, it swaps the
-        suggestion into the value."""
+        """Input subclass with two tweaks over the stock Textual Input:
+
+        1. Tab accepts the suggester's ghost text (via cursor_right, which
+           swaps the suggestion into the value when the cursor is at end).
+        2. Multi-line pastes are flattened: newlines become single spaces
+           and the full content is preserved. Textual's default paste
+           handler only keeps the first splitlines() line, so clipboards
+           starting with a newline or containing intended multi-line
+           content would silently drop most of the text.
+        """
 
         BINDINGS = [
             Binding("tab", "cursor_right", "Accept suggestion", show=False),
         ]
+
+        def _on_paste(self, event) -> None:
+            from textual import events as _events
+            if not isinstance(event, _events.Paste):
+                return
+            text = event.text or ""
+            if not text:
+                event.stop()
+                return
+            # Collapse CRLF/CR/LF and runs of whitespace so "\n\n" doesn't
+            # become a visible double-space and indented content stays tidy.
+            import re as _re
+            flat = _re.sub(r"\s+", " ", text).strip()
+            if flat:
+                self.insert_text_at_cursor(flat)
+            event.stop()
 
 
     class SlashSuggester(Suggester):
