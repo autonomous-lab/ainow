@@ -449,6 +449,15 @@ if _HAS_TEXTUAL:
                 online = " (online)" if cfg.get("online") else ""
                 model_options.append((f"{alias:<12}  {name}{online}", alias))
 
+            # Normalize the current value — state.model_alias may hold either
+            # the short alias ("9b") or the full model_id ("qwen3.5-9b").
+            # Select rejects values that aren't in its options list.
+            current_alias = self._current.get("alias")
+            allowed_values = {v for _, v in model_options}
+            if current_alias and current_alias not in allowed_values:
+                reverse = {mid: alias for alias, mid in MODEL_ALIASES.items()}
+                current_alias = reverse.get(current_alias)
+
             ctx_choices = [
                 ("4K (4096)", "4096"),
                 ("8K (8192)", "8192"),
@@ -468,8 +477,8 @@ if _HAS_TEXTUAL:
                     yield Label("model")
                     yield Select(
                         model_options,
-                        value=self._current.get("alias") or Select.BLANK,
-                        allow_blank=False,
+                        value=current_alias if current_alias else Select.BLANK,
+                        allow_blank=True,
                         id="cfg-model",
                     )
 
