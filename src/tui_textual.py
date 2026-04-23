@@ -190,15 +190,17 @@ if _HAS_TEXTUAL:
 
 
     class AINowInput(Input):
-        """Input subclass with two tweaks over the stock Textual Input:
+        """Input subclass with three tweaks over the stock Textual Input:
 
         1. Tab accepts the suggester's ghost text (via cursor_right, which
            swaps the suggestion into the value when the cursor is at end).
-        2. Multi-line pastes are flattened: newlines become single spaces
-           and the full content is preserved. Textual's default paste
-           handler only keeps the first splitlines() line, so clipboards
-           starting with a newline or containing intended multi-line
-           content would silently drop most of the text.
+        2. Multi-line pastes (bracketed paste / Ctrl+V) are flattened:
+           newlines become single spaces and the full content is preserved.
+           Textual's default paste handler only keeps the first splitlines()
+           line, so clipboards starting with a newline or containing
+           intended multi-line content would silently drop most of the text.
+        3. Right-click pastes from the system clipboard (Textual captures
+           the mouse before Windows Terminal can handle right-click-paste).
         """
 
         BINDINGS = [
@@ -206,15 +208,18 @@ if _HAS_TEXTUAL:
         ]
 
         def _on_paste(self, event) -> None:
+            # Intercept BEFORE the parent Input's default handler runs.
+            # prevent_default() stops Textual from calling the base class's
+            # _on_paste (which would insert splitlines()[0] again, causing
+            # duplicated content). stop() prevents bubbling up the tree.
             from textual import events as _events
             if not isinstance(event, _events.Paste):
                 return
-            text = event.text or ""
-            if not text:
-                event.stop()
-                return
-            self._insert_flattened(text)
+            event.prevent_default()
             event.stop()
+            text = event.text or ""
+            if text:
+                self._insert_flattened(text)
 
         def on_click(self, event) -> None:
             """Right-click pastes from the system clipboard.
