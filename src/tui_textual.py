@@ -659,7 +659,10 @@ if _HAS_TEXTUAL:
             Binding("down", "history_next", "History ↓", show=False),
             Binding("pageup", "scroll_up", "Scroll up", show=False),
             Binding("pagedown", "scroll_down", "Scroll down", show=False),
-            Binding("ctrl+shift+c", "copy_chat", "Copy chat"),
+            # F7 because Ctrl+Shift+C is intercepted by Windows Terminal and
+            # Ctrl+C is already bound to interrupt/quit. F-keys aren't
+            # eaten by any terminal emulator.
+            Binding("f7", "copy_chat", "Copy chat"),
         ]
 
         # Persisted history file — same path as the prompt_toolkit REPL mode
@@ -719,8 +722,7 @@ if _HAS_TEXTUAL:
                 f"[dim]permissions:[/dim] [{'yellow' if s.yolo else 'green'}]{'yolo' if s.yolo else 'confirm'}[/]\n"
                 f"[dim]context:[/dim]     [cyan]{ctx_fmt}[/cyan]\n\n"
                 f"[dim]/help for commands  ·  /config to tune  ·  Ctrl+D to exit[/dim]\n"
-                f"[dim]Ctrl+Shift+C copies chat  ·  hold [white]Shift[/white] while selecting "
-                f"for native terminal copy (right-click in Windows Terminal)[/dim]"
+                f"[dim][white]F7[/white] copies the chat transcript to the clipboard[/dim]"
             )
             self._append_message("system", banner, markup=True)
             self.query_one("#input", Input).focus()
@@ -1136,14 +1138,12 @@ if _HAS_TEXTUAL:
                 pass
 
         def action_copy_chat(self) -> None:
-            """Copy the whole chat transcript (user messages + assistant
-            replies, strip markup) to the clipboard via OSC 52.
+            """Copy the whole chat transcript to the clipboard via OSC 52.
 
-            Right-click → copy only works when mouse capture is OFF; since
-            Textual captures the mouse for its own events, the platform
-            convention is: hold Shift while selecting for native terminal
-            selection, then right-click copies. This shortcut is the
-            keyboard alternative that always works."""
+            Textual captures the mouse for its own events, so click-drag
+            selection doesn't reach the terminal's native selection layer.
+            (Shift-bypass of mouse capture is terminal-specific and fails on
+            many setups.) F7 is the reliable keyboard path."""
             try:
                 chat = self.query_one("#chat", VerticalScroll)
             except Exception:
