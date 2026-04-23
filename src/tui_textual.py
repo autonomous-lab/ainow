@@ -758,7 +758,12 @@ if _HAS_TEXTUAL:
             )
 
         def log_system(self, text: str, style: str = "dim") -> None:
-            self._append_message("system", f"[{style}]{text}[/{style}]", markup=True)
+            # Empty style would produce "[][/]" — Rich parses "[/]" as an
+            # auto-closing tag with nothing to close and crashes. Skip the
+            # wrapping tag entirely when style is falsy.
+            if style:
+                text = f"[{style}]{text}[/{style}]"
+            self._append_message("system", text, markup=True)
 
         def log_error(self, text: str) -> None:
             self._append_message("error", f"[red]{text}[/red]", markup=True)
