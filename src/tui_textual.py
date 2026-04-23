@@ -188,6 +188,17 @@ if _HAS_TEXTUAL:
             self.update(f"[yellow]{ch}[/yellow] [italic dim]{self._phrase}{dots}[/italic dim]")
 
 
+    class AINowInput(Input):
+        """Input subclass that accepts suggester ghost text via Tab as well
+        as the default Right arrow. `cursor_right` handles both: if the
+        cursor is at end and there's a pending suggestion, it swaps the
+        suggestion into the value."""
+
+        BINDINGS = [
+            Binding("tab", "cursor_right", "Accept suggestion", show=False),
+        ]
+
+
     class SlashSuggester(Suggester):
         """Ghost-text suggester for `/` commands on the Input widget.
 
@@ -624,8 +635,12 @@ if _HAS_TEXTUAL:
             Binding("ctrl+t", "toggle_thinking", "Think"),
             Binding("shift+tab", "thinking_mode", "Reason"),
             Binding("ctrl+l", "pick_model", "Model"),
-            Binding("up", "history_prev", "History ↑", show=False, priority=True),
-            Binding("down", "history_next", "History ↓", show=False, priority=True),
+            # NOT priority — otherwise they eat up/down inside pushed modals
+            # (e.g. the /help ListView could never navigate). Input has no
+            # up/down binding of its own, so these still fire when the Input
+            # is focused and bubble up from the Screen.
+            Binding("up", "history_prev", "History ↑", show=False),
+            Binding("down", "history_next", "History ↓", show=False),
             Binding("pageup", "scroll_up", "Scroll up", show=False),
             Binding("pagedown", "scroll_down", "Scroll down", show=False),
         ]
@@ -664,7 +679,7 @@ if _HAS_TEXTUAL:
         def compose(self) -> ComposeResult:
             yield VerticalScroll(id="chat")
             yield StatusBar(state=self.state)
-            yield Input(
+            yield AINowInput(
                 placeholder="Type a message, /help for commands, Ctrl+D to exit…",
                 id="input",
                 suggester=SlashSuggester(),
@@ -849,7 +864,10 @@ if _HAS_TEXTUAL:
                 self.log_system("a turn is already running — press Ctrl+C to interrupt", "yellow")
                 return
             self.log_user(text)
-            self.show_spinner()
+            # Spinner is owned by _handle_line — only shown for actual LLM
+            # calls, NOT slash commands or bash shortcuts (those ran before
+            # and left the spinner hanging, making it look like the LLM was
+            # still "thinking" after the command already completed).
             self._turn_task = asyncio.create_task(self._handle_line(text))
 
         async def _handle_line(self, line: str) -> None:
@@ -866,6 +884,8 @@ if _HAS_TEXTUAL:
                 return
             if handled:
                 return
+            # Only now — a real LLM turn — do we show the thinking spinner.
+            self.show_spinner()
             try:
                 await self._submit(line)
             finally:
