@@ -430,8 +430,12 @@ if _HAS_TEXTUAL:
         }
         """
 
+        # Tab / Shift+Tab as priority=True so the app-level `shift+tab` =>
+        # thinking_mode binding doesn't steal focus cycling inside the modal.
         BINDINGS = [
             Binding("escape", "dismiss_modal", "Cancel", priority=True),
+            Binding("tab", "focus_next", "Next field", show=False, priority=True),
+            Binding("shift+tab", "focus_previous", "Prev field", show=False, priority=True),
         ]
 
         def __init__(self, *, current: dict):
@@ -465,6 +469,9 @@ if _HAS_TEXTUAL:
                 ("32K (32768)", "32768"),
                 ("64K (65536)", "65536"),
                 ("128K (131072)", "131072"),
+                ("256K (262144)", "262144"),
+                ("512K (524288)", "524288"),
+                ("1M (1048576)", "1048576"),
             ]
             cur_ctx = str(self._current.get("ctx", "") or "")
             if cur_ctx and cur_ctx not in [v for _, v in ctx_choices]:
@@ -500,8 +507,8 @@ if _HAS_TEXTUAL:
                     yield Switch(value=bool(self._current.get("thinking", False)), id="cfg-thinking")
 
                 yield Static(
-                    "[dim]Apply reloads llama-server with the new params. "
-                    "Esc to cancel.[/dim]",
+                    "[dim]Tab / Shift+Tab to cycle fields · ↑/↓ within a field · "
+                    "Apply reloads llama-server · Esc to cancel.[/dim]",
                     id="cfg-hint",
                     markup=True,
                 )
