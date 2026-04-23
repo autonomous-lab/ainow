@@ -659,6 +659,7 @@ if _HAS_TEXTUAL:
             Binding("down", "history_next", "History ↓", show=False),
             Binding("pageup", "scroll_up", "Scroll up", show=False),
             Binding("pagedown", "scroll_down", "Scroll down", show=False),
+            Binding("ctrl+shift+c", "copy_chat", "Copy chat"),
         ]
 
         # Persisted history file — same path as the prompt_toolkit REPL mode
@@ -717,7 +718,9 @@ if _HAS_TEXTUAL:
                 f"[dim]agent:[/dim]       [cyan]{s.agent_name}[/cyan]\n"
                 f"[dim]permissions:[/dim] [{'yellow' if s.yolo else 'green'}]{'yolo' if s.yolo else 'confirm'}[/]\n"
                 f"[dim]context:[/dim]     [cyan]{ctx_fmt}[/cyan]\n\n"
-                f"[dim]/help for commands  ·  /model to switch  ·  Ctrl+D to exit[/dim]"
+                f"[dim]/help for commands  ·  /config to tune  ·  Ctrl+D to exit[/dim]\n"
+                f"[dim]Ctrl+Shift+C copies chat  ·  hold [white]Shift[/white] while selecting "
+                f"for native terminal copy (right-click in Windows Terminal)[/dim]"
             )
             self._append_message("system", banner, markup=True)
             self.query_one("#input", Input).focus()
@@ -1131,6 +1134,34 @@ if _HAS_TEXTUAL:
                 self.query_one(StatusBar).refresh_status()
             except Exception:
                 pass
+
+        def action_copy_chat(self) -> None:
+            """Copy the whole chat transcript (user messages + assistant
+            replies, strip markup) to the clipboard via OSC 52.
+
+            Right-click → copy only works when mouse capture is OFF; since
+            Textual captures the mouse for its own events, the platform
+            convention is: hold Shift while selecting for native terminal
+            selection, then right-click copies. This shortcut is the
+            keyboard alternative that always works."""
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+            except Exception:
+                return
+            parts: list[str] = []
+            for child in chat.children:
+                if isinstance(child, ChatMessage):
+                    parts.append(child._buffer or "")
+            transcript = "\n".join(p for p in parts if p).strip()
+            if not transcript:
+                self.log_system("nothing to copy")
+                return
+            try:
+                self.copy_to_clipboard(transcript)
+                n_lines = transcript.count("\n") + 1
+                self.log_system(f"copied {n_lines} lines to clipboard", "green")
+            except Exception as e:
+                self.log_error(f"copy failed: {e}")
 
         def action_scroll_up(self) -> None:
             try:
