@@ -397,8 +397,20 @@ async def _on_tool_result(tool_call_id: str, name: str, result: str) -> None:
 
 
 async def _on_thinking(text: str, duration: float, done: bool) -> None:
-    """Stream reasoning_content when Ctrl+T toggle is on, else stay silent."""
-    if _CURRENT_STATE is None or not _CURRENT_STATE.show_thinking:
+    """Stream reasoning_content when either thinking-display toggle is on.
+
+    * Ctrl+T flips `show_thinking`
+    * /verbose flips `verbose` — treat both as "show me the reasoning"
+      so the user doesn't have to remember two separate switches."""
+    if _CURRENT_STATE is None:
+        return
+    if not (_CURRENT_STATE.show_thinking or _CURRENT_STATE.verbose):
+        return
+    if _TEXTUAL_APP is not None:
+        if done:
+            _TEXTUAL_APP.thinking_finalize(duration)
+        elif text:
+            _TEXTUAL_APP.thinking_append(text)
         return
     if done:
         if _CHATLOG is not None:

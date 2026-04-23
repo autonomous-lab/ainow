@@ -124,6 +124,7 @@ if _HAS_TEXTUAL:
         ChatMessage.tool { color: $success; }
         ChatMessage.error { color: $error; }
         ChatMessage.system { color: $text-muted; text-style: italic; }
+        ChatMessage.thinking { color: $warning; text-style: italic; }
         """
 
         def __init__(self, role: str, text: str = "", markup: bool = False):
@@ -686,6 +687,7 @@ if _HAS_TEXTUAL:
             self._keyshortcut = keyshortcut_handler
             self._turn_task: Optional[asyncio.Task] = None
             self._current_assistant_msg: Optional[ChatMessage] = None
+            self._current_thinking_msg: Optional[ChatMessage] = None
             self._spinner: Optional[ThinkingSpinner] = None
             # Input history — loaded from disk on startup, appended on submit,
             # persisted on exit.
@@ -789,6 +791,29 @@ if _HAS_TEXTUAL:
             """Mark the current assistant message as complete. Next token starts a new bubble."""
             self._dismiss_spinner()
             self._current_assistant_msg = None
+            self._current_thinking_msg = None
+
+        def thinking_append(self, text: str) -> None:
+            """Stream a chunk of reasoning_content into a dedicated
+            thinking bubble. Only called when the user opted in via
+            `/verbose` or Ctrl+T (see _on_thinking)."""
+            self._dismiss_spinner()
+            if self._current_thinking_msg is None:
+                self._current_thinking_msg = ChatMessage(
+                    "thinking", "[dim italic]💭 thinking…[/dim italic]\n", markup=True,
+                )
+                self.query_one("#chat", VerticalScroll).mount(self._current_thinking_msg)
+            self._current_thinking_msg.append(text)
+            self._scroll_to_end()
+
+        def thinking_finalize(self, duration: float) -> None:
+            """Close out the thinking bubble with a duration footer."""
+            if self._current_thinking_msg is not None:
+                self._current_thinking_msg.append(
+                    f"\n[dim italic]— thought for {duration:.1f}s —[/dim italic]"
+                )
+                self._current_thinking_msg = None
+            self._scroll_to_end()
 
         def show_spinner(self) -> None:
             """Mount the thinking animation right after the user message."""
