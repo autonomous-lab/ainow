@@ -940,9 +940,23 @@ if _HAS_TEXTUAL:
         async def confirm_tool(self, name: str, detail: str) -> bool:
             """Await a user approval via a Textual modal. Called from
             CLIState.confirm when `_TEXTUAL_APP` is active — replaces the
-            blocking sys.stdin.readline() path that would deadlock the app."""
-            result = await self.push_screen_wait(ConfirmModal(name=name, detail=detail))
-            return bool(result)
+            blocking sys.stdin.readline() path that would deadlock the app.
+
+            Implemented with a Future + callback rather than push_screen_wait,
+            because the latter requires a Textual worker context, which the
+            tool-confirmation call site (inside LLMService.chat) is not."""
+            loop = asyncio.get_event_loop()
+            fut: asyncio.Future = loop.create_future()
+
+            def _cb(result) -> None:
+                if not fut.done():
+                    fut.set_result(bool(result))
+
+            self.push_screen(ConfirmModal(name=name, detail=detail), _cb)
+            try:
+                return await fut
+            except asyncio.CancelledError:
+                return False
 
         def show_config_modal(self) -> None:
             """Open the unified /config modal. On apply, route the chosen
