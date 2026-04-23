@@ -209,9 +209,15 @@ if _HAS_TEXTUAL:
             Binding("ctrl+t", "toggle_thinking", "Think"),
             Binding("shift+tab", "thinking_mode", "Reason"),
             Binding("ctrl+l", "pick_model", "Model"),
+            Binding("up", "history_prev", "History ↑", show=False, priority=True),
+            Binding("down", "history_next", "History ↓", show=False, priority=True),
             Binding("pageup", "scroll_up", "Scroll up", show=False),
             Binding("pagedown", "scroll_down", "Scroll down", show=False),
         ]
+
+        # Persisted history file — same path as the prompt_toolkit REPL mode
+        # so both share a single command history.
+        HISTORY_FILE = str(Path(os.path.expanduser("~")) / ".ainow_cli_history")
 
         def __init__(
             self,
@@ -230,6 +236,12 @@ if _HAS_TEXTUAL:
             self._keyshortcut = keyshortcut_handler
             self._turn_task: Optional[asyncio.Task] = None
             self._current_assistant_msg: Optional[ChatMessage] = None
+            # Input history — loaded from disk on startup, appended on submit,
+            # persisted on exit.
+            self._history: list[str] = []
+            self._history_idx: Optional[int] = None  # None = editing fresh input
+            self._history_saved_text: str = ""  # buffer the unsubmitted input
+            self._load_history()
 
         # --- layout -------------------------------------------------------
 
@@ -314,13 +326,86 @@ if _HAS_TEXTUAL:
             """Mark the current assistant message as complete. Next token starts a new bubble."""
             self._current_assistant_msg = None
 
+        # --- history -----------------------------------------------------
+
+        def _load_history(self) -> None:
+            try:
+                with open(self.HISTORY_FILE, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.rstrip("\n")
+                        if line:
+                            self._history.append(line)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+
+        def _append_history(self, line: str) -> None:
+            if not line.strip():
+                return
+            # De-dupe consecutive identical entries
+            if self._history and self._history[-1] == line:
+                return
+            self._history.append(line)
+            try:
+                with open(self.HISTORY_FILE, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
+
+        def _apply_history_entry(self) -> None:
+            inp = self.query_one("#input", Input)
+            if self._history_idx is None:
+                inp.value = self._history_saved_text
+            else:
+                inp.value = self._history[self._history_idx]
+            try:
+                inp.cursor_position = len(inp.value)
+            except Exception:
+                pass
+
+        def action_history_prev(self) -> None:
+            if not self._history:
+                return
+            try:
+                inp = self.query_one("#input", Input)
+            except Exception:
+                return
+            if not inp.has_focus:
+                return
+            if self._history_idx is None:
+                self._history_saved_text = inp.value
+                self._history_idx = len(self._history) - 1
+            elif self._history_idx > 0:
+                self._history_idx -= 1
+            self._apply_history_entry()
+
+        def action_history_next(self) -> None:
+            if self._history_idx is None:
+                return
+            try:
+                inp = self.query_one("#input", Input)
+            except Exception:
+                return
+            if not inp.has_focus:
+                return
+            if self._history_idx < len(self._history) - 1:
+                self._history_idx += 1
+            else:
+                self._history_idx = None  # back to the unsubmitted buffer
+            self._apply_history_entry()
+
         # --- input submission --------------------------------------------
 
         async def on_input_submitted(self, event: Input.Submitted) -> None:
             text = event.value.strip()
             event.input.value = ""
+            # Reset history cursor + clear the saved buffer on every submit
+            self._history_idx = None
+            self._history_saved_text = ""
             if not text:
                 return
+            self._append_history(text)
             if self._turn_task and not self._turn_task.done():
                 self.log_system("a turn is already running — press Ctrl+C to interrupt", "yellow")
                 return
