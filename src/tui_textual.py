@@ -101,6 +101,53 @@ if _HAS_TEXTUAL:
             self.update(self._buffer)
 
 
+    class ThinkingSpinner(Static):
+        """Animated 'AINow is thinking…' indicator, shown from user submit
+        until the first token arrives. Cycles through braille spinner chars
+        every ~100ms; removed from the chat tree on first token / tool call."""
+
+        DEFAULT_CSS = """
+        ThinkingSpinner {
+            padding: 0 1;
+            margin: 0 0 1 0;
+            height: 1;
+            color: $warning;
+            text-style: italic;
+        }
+        """
+
+        FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        PHRASES = (
+            "AINow is thinking",
+            "consulting the silicon oracle",
+            "warming up the KV cache",
+            "decoding",
+            "asking the model nicely",
+            "crunching tokens",
+        )
+
+        def __init__(self) -> None:
+            super().__init__("", markup=True)
+            self._frame = 0
+            import random as _r
+            self._phrase = _r.choice(self.PHRASES)
+            self._timer = None
+
+        def on_mount(self) -> None:
+            self._render_frame()
+            # 80ms → 12.5 fps, smooth without wasting CPU
+            self._timer = self.set_interval(0.08, self._tick)
+
+        def _tick(self) -> None:
+            self._frame = (self._frame + 1) % len(self.FRAMES)
+            self._render_frame()
+
+        def _render_frame(self) -> None:
+            ch = self.FRAMES[self._frame]
+            dots = "." * ((self._frame // 3) % 4)
+            self.update(f"[yellow]{ch}[/yellow] [italic dim]{self._phrase}{dots}[/italic dim]")
+
+
     class StatusBar(Static):
         """One-line status bar showing model, ctx%, permissions, session stats."""
 
@@ -236,6 +283,7 @@ if _HAS_TEXTUAL:
             self._keyshortcut = keyshortcut_handler
             self._turn_task: Optional[asyncio.Task] = None
             self._current_assistant_msg: Optional[ChatMessage] = None
+            self._spinner: Optional[ThinkingSpinner] = None
             # Input history — loaded from disk on startup, appended on submit,
             # persisted on exit.
             self._history: list[str] = []
@@ -292,6 +340,7 @@ if _HAS_TEXTUAL:
             self._append_message("user", f"› {text}")
 
         def log_tool_arrow(self, name: str, arg_summary: str) -> None:
+            self._dismiss_spinner()
             self._append_message(
                 "tool", f"[cyan]→[/cyan] [bold]{name}[/bold]  [dim]{arg_summary}[/dim]",
                 markup=True,
@@ -316,6 +365,7 @@ if _HAS_TEXTUAL:
 
         def token_append(self, token: str) -> None:
             """Append a streaming token to the current assistant message."""
+            self._dismiss_spinner()
             if self._current_assistant_msg is None:
                 self._current_assistant_msg = ChatMessage("assistant", "", markup=False)
                 self.query_one("#chat", VerticalScroll).mount(self._current_assistant_msg)
@@ -324,7 +374,24 @@ if _HAS_TEXTUAL:
 
         def finalize_turn(self) -> None:
             """Mark the current assistant message as complete. Next token starts a new bubble."""
+            self._dismiss_spinner()
             self._current_assistant_msg = None
+
+        def show_spinner(self) -> None:
+            """Mount the thinking animation right after the user message."""
+            if self._spinner is not None:
+                return
+            self._spinner = ThinkingSpinner()
+            self.query_one("#chat", VerticalScroll).mount(self._spinner)
+            self._scroll_to_end()
+
+        def _dismiss_spinner(self) -> None:
+            if self._spinner is not None:
+                try:
+                    self._spinner.remove()
+                except Exception:
+                    pass
+                self._spinner = None
 
         # --- history -----------------------------------------------------
 
@@ -410,6 +477,7 @@ if _HAS_TEXTUAL:
                 self.log_system("a turn is already running — press Ctrl+C to interrupt", "yellow")
                 return
             self.log_user(text)
+            self.show_spinner()
             self._turn_task = asyncio.create_task(self._handle_line(text))
 
         async def _handle_line(self, line: str) -> None:
