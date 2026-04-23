@@ -103,6 +103,41 @@ from rich.align import Align
 console = Console(file=sys.stderr, highlight=False, soft_wrap=True)
 stdout_console = Console(file=sys.stdout, highlight=False, soft_wrap=True)
 
+# When the full-screen TUI is active we reroute Rich prints into the ChatLog
+# so slash-command panels, error messages, etc. appear in the chat window
+# instead of being swallowed behind the full-screen app.
+_ORIG_CONSOLE_PRINT = Console.print
+
+
+def _patched_console_print(self, *objects, **kwargs) -> None:
+    if self is not console or (_CHATLOG is None and _TEXTUAL_APP is None):
+        return _ORIG_CONSOLE_PRINT(self, *objects, **kwargs)
+    # Render via a throwaway Rich Console that writes to an in-memory buffer
+    # with ANSI codes preserved, then feed the result into the active sink.
+    import io as _io
+    buf = _io.StringIO()
+    tmp = Console(
+        file=buf, force_terminal=True, color_system="truecolor",
+        width=self.width, highlight=False, soft_wrap=True,
+    )
+    _ORIG_CONSOLE_PRINT(tmp, *objects, **kwargs)
+    text = buf.getvalue()
+    if not text:
+        return
+    if _TEXTUAL_APP is not None:
+        # Textual's Static widgets render Rich console markup directly, but
+        # raw ANSI escape codes don't render — strip to plain text and let
+        # the widget's style class handle colouring.
+        import re as _re
+        plain = _re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", text).rstrip()
+        if plain:
+            _TEXTUAL_APP.log_system(plain, "dim")
+    elif _CHATLOG is not None:
+        _CHATLOG.append_ansi(text)
+
+
+Console.print = _patched_console_print  # type: ignore[assignment]
+
 VERSION = "v1.1"
 STREAMED_TOKENS_IN_TURN = 0
 
@@ -282,14 +317,28 @@ def _tool_check(name: str, result: str) -> None:
 async def _print_token(token: str) -> None:
     global STREAMED_TOKENS_IN_TURN
     STREAMED_TOKENS_IN_TURN += 1
-    # Stream raw to stdout so output is pipeable and mixes cleanly with Rich
-    # status lines (which go to stderr).
-    sys.stdout.write(token)
-    sys.stdout.flush()
+    if _TEXTUAL_APP is not None:
+        _TEXTUAL_APP.token_append(token)
+    elif _CHATLOG is not None:
+        _CHATLOG.append(token)
+    else:
+        # Stream raw to stdout so output is pipeable and mixes cleanly with Rich
+        # status lines (which go to stderr).
+        sys.stdout.write(token)
+        sys.stdout.flush()
 
 
 async def _on_tool_call(name: str, args) -> None:
-    # Ensure token stream has a newline before the tool arrow
+    if _TEXTUAL_APP is not None:
+        _TEXTUAL_APP.finalize_turn()  # close the assistant bubble, tool block follows
+        _TEXTUAL_APP.log_tool_arrow(name, _short_arg(args) if "_short_arg" in globals() else "")
+        return
+    if _CHATLOG is not None:
+        if _CHATLOG._fragments and not _CHATLOG._fragments[-1][1].endswith("\n"):
+            _CHATLOG.append("\n")
+        short = _short_arg(args) if "_short_arg" in globals() else ""
+        _CHATLOG.append_line(f"→ {name:<8}  {short}", "fg:ansicyan")
+        return
     if STREAMED_TOKENS_IN_TURN > 0:
         sys.stdout.write("\n")
         sys.stdout.flush()
@@ -297,15 +346,54 @@ async def _on_tool_call(name: str, args) -> None:
 
 
 _CURRENT_STATE: Optional["CLIState"] = None  # set in main() so callbacks can reach flags
+_CHATLOG = None  # set when in prompt_toolkit full-screen mode
+_TEXTUAL_APP = None  # set when in Textual mode — tokens/messages route to this app
 
 
 async def _on_tool_result(tool_call_id: str, name: str, result: str) -> None:
-    _tool_check(name, result)
+    if _TEXTUAL_APP is not None:
+        is_error = result.startswith(("Error", "error", "[ERROR")) or "[exit code:" in result[:200]
+        mark = "✗" if is_error else "✓"
+        result = result or ""
+        if is_error:
+            first = result.strip().splitlines()[0] if result.strip() else "(error)"
+            if len(first) > 120:
+                first = first[:117] + "…"
+            detail = first
+        elif result:
+            n_lines = result.count("\n") + (1 if result.strip() else 0)
+            detail = f"{n_lines} lines ({len(result)} chars)" if n_lines > 1 else result.strip()[:80]
+        else:
+            detail = "(no output)"
+        _TEXTUAL_APP.log_tool_result(name, mark, detail, is_error)
+        return
+    if _CHATLOG is not None:
+        is_error = result.startswith(("Error", "error", "[ERROR")) or "[exit code:" in result[:200]
+        mark = "✗" if is_error else "✓"
+        color = "fg:ansired" if is_error else "fg:ansigreen"
+        # Short summary — mimic _tool_check but into the chatlog
+        result = result or ""
+        if is_error:
+            first = result.strip().splitlines()[0] if result.strip() else "(error)"
+            if len(first) > 120:
+                first = first[:117] + "…"
+            detail = first
+        elif result:
+            n_lines = result.count("\n") + (1 if result.strip() else 0)
+            detail = f"{n_lines} lines ({len(result)} chars)" if n_lines > 1 else result.strip()[:80]
+        else:
+            detail = "(no output)"
+        _CHATLOG.append_line(f"{mark} → {name:<8}  {detail}", color)
+    else:
+        _tool_check(name, result)
     # Expanded tool-output mode (toggle via Ctrl+O): also print the full body,
     # truncated to keep the terminal usable.
     if _CURRENT_STATE is not None and _CURRENT_STATE.show_tool_output and result:
         body = result if len(result) <= 2000 else result[:2000] + "\n… (truncated)"
-        console.print(Panel(Text(body), border_style="dim", padding=(0, 1)))
+        if _CHATLOG is not None:
+            _CHATLOG.append_line(body, "fg:ansibrightblack")
+        else:
+            console.print(Panel(Text(body), border_style="dim", padding=(0, 1)))
 
 
 async def _on_thinking(text: str, duration: float, done: bool) -> None:
@@ -313,12 +401,18 @@ async def _on_thinking(text: str, duration: float, done: bool) -> None:
     if _CURRENT_STATE is None or not _CURRENT_STATE.show_thinking:
         return
     if done:
-        sys.stderr.write(f"\n[thinking done in {duration:.1f}s]\n")
-        sys.stderr.flush()
+        if _CHATLOG is not None:
+            _CHATLOG.append_line(f"[thinking done in {duration:.1f}s]", "fg:ansibrightblack")
+        else:
+            sys.stderr.write(f"\n[thinking done in {duration:.1f}s]\n")
+            sys.stderr.flush()
         return
     if text:
-        sys.stderr.write(f"\033[2m{text}\033[0m")  # dim ANSI
-        sys.stderr.flush()
+        if _CHATLOG is not None:
+            _CHATLOG.append(text, "fg:ansibrightblack")
+        else:
+            sys.stderr.write(f"\033[2m{text}\033[0m")  # dim ANSI
+            sys.stderr.flush()
 
 
 def _prompt_confirm(name: str, args) -> bool:
@@ -1110,9 +1204,15 @@ async def _run_one_turn(state: CLIState, prompt: str) -> None:
         state.last_turn_seconds = _elapsed
         state.session_total_tokens += STREAMED_TOKENS_IN_TURN
         state.session_total_seconds += _elapsed
-        console.print(Text.from_markup(
-            f"[dim]{STREAMED_TOKENS_IN_TURN} tok · {_elapsed:.1f}s · {_tps:.1f} tok/s[/dim]"
-        ))
+        summary = f"{STREAMED_TOKENS_IN_TURN} tok · {_elapsed:.1f}s · {_tps:.1f} tok/s"
+        if _TEXTUAL_APP is not None:
+            _TEXTUAL_APP.log_system(summary, "dim")
+        elif _CHATLOG is not None:
+            if _CHATLOG._fragments and not _CHATLOG._fragments[-1][1].endswith("\n"):
+                _CHATLOG.append("\n")
+            _CHATLOG.append_line(summary, "fg:ansibrightblack")
+        else:
+            console.print(Text.from_markup(f"[dim]{summary}[/dim]"))
 
 
 def _read_prompt_line() -> Optional[str]:
@@ -1259,6 +1359,92 @@ def _expand_file_refs(state: CLIState, prompt: str) -> str:
     return expanded
 
 
+async def _drive_textual(state: CLIState, args) -> None:
+    """Run the REPL inside a Textual App (recommended full-screen mode).
+
+    Token/tool/thinking callbacks route through a `_TEXTUAL_APP` module-level
+    reference that the existing `_print_token` / `_on_tool_call` / etc. check
+    before falling back to stdout/console.
+    """
+    global _TEXTUAL_APP
+    from .tui_textual import AINowApp
+
+    state.refresh_context_stats()
+
+    async def _submit(line: str) -> None:
+        line = _expand_file_refs(state, line)
+        await _run_one_turn(state, line)
+        state.refresh_context_stats()
+
+    async def _slash(line: str) -> bool:
+        try:
+            return await _handle_slash(state, line)
+        except SystemExit:
+            raise
+
+    async def _bash_short(cmd: str, silent: bool) -> None:
+        await _run_bash_shortcut(state, cmd, silent=silent)
+
+    async def _key(action: str) -> None:
+        await _handle_keyshortcut(state, action)
+
+    app = AINowApp(
+        state=state,
+        submit_handler=_submit,
+        slash_handler=_slash,
+        bash_shortcut_handler=_bash_short,
+        keyshortcut_handler=_key,
+    )
+    _TEXTUAL_APP = app
+    try:
+        await app.run_async()
+    finally:
+        _TEXTUAL_APP = None
+
+
+async def _drive_fullscreen(state: CLIState, args) -> None:
+    """Run the REPL inside a full-screen prompt_toolkit Application.
+
+    Tokens, tool arrows, thinking, slash-command output, end-of-turn summary
+    all route into a ChatLog that the app's chat window renders. The toolbar
+    is part of the layout so it stays visible during streaming.
+    """
+    global _CHATLOG
+    from .tui_fullscreen import FullScreenApp
+
+    state.refresh_context_stats()
+
+    async def _submit(line: str) -> None:
+        line = _expand_file_refs(state, line)
+        await _run_one_turn(state, line)
+        state.refresh_context_stats()
+
+    async def _slash(line: str) -> bool:
+        try:
+            return await _handle_slash(state, line)
+        except SystemExit:
+            raise
+
+    async def _bash_short(cmd: str, silent: bool) -> None:
+        await _run_bash_shortcut(state, cmd, silent=silent)
+
+    async def _key(action: str) -> None:
+        await _handle_keyshortcut(state, action)
+
+    app = FullScreenApp(
+        state=state,
+        submit_handler=_submit,
+        slash_handler=_slash,
+        bash_shortcut_handler=_bash_short,
+        keyshortcut_handler=_key,
+    )
+    _CHATLOG = app.log
+    try:
+        await app.run()
+    finally:
+        _CHATLOG = None
+
+
 async def _handle_keyshortcut(state: CLIState, action: str) -> None:
     """Dispatched from the TUI key bindings (Shift+Tab, Ctrl+L, …)."""
     if action == "thinking_toggle":
@@ -1364,6 +1550,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-banner", action="store_true", help="Skip the startup banner.")
     p.add_argument("--minimal-banner", action="store_true", help="One-line banner instead of the boxed panel.")
     p.add_argument("--altscreen", action="store_true", help="Use an alternate screen buffer (TUI owns the terminal). Default: off — keeps normal scrollback so you can scroll back through the conversation.")
+    p.add_argument("--fullscreen", action="store_true", help="Use the experimental full-screen prompt_toolkit Application (chat area + persistent toolbar). Known to flicker / drift on Windows conhost; default is the line-based REPL.")
+    p.add_argument("--textual", action="store_true", help="Use the Textual-based TUI (recommended for full-screen experience — reliable rendering on Windows).")
     p.add_argument(
         "--yolo", "--auto-approve",
         dest="auto_approve",
@@ -1405,13 +1593,22 @@ def main(argv: list[str] | None = None) -> None:
     global _CURRENT_STATE
     _CURRENT_STATE = state
 
-    # Banner — skipped here if we're about to swap to alt-screen (the banner
-    # is re-rendered as the first thing on the alt screen so the user sees it).
+    # Banner — skipped here if we're about to swap to alt-screen OR enter
+    # the full-screen TUI (both re-render the banner inside the app so it
+    # stays visible instead of being wiped by the alternate screen).
     _will_altscreen = (
         args.interactive and args.altscreen
         and sys.stdout.isatty() and sys.stderr.isatty()
     )
-    if not args.no_banner and not _will_altscreen:
+    _will_fullscreen = (
+        args.interactive and args.fullscreen
+        and sys.stdout.isatty() and sys.stderr.isatty()
+    )
+    _will_textual = (
+        args.interactive and args.textual
+        and sys.stdout.isatty() and sys.stderr.isatty()
+    )
+    if not args.no_banner and not _will_altscreen and not _will_fullscreen and not _will_textual:
         from .services.model_manager import model_manager
         _banner(
             model_label=state.model_label(),
@@ -1422,12 +1619,47 @@ def main(argv: list[str] | None = None) -> None:
             minimal=args.minimal_banner,
         )
 
+    # Full-screen is opt-in via --fullscreen. Default is the line-based
+    # PromptSession REPL which is stable across Windows conhost / cmd /
+    # Powershell / Unix terminals. The full-screen mode still has pending
+    # rendering issues on Windows (prompt_toolkit redraw doesn't fully clear
+    # between frames in some cases).
+    _use_fullscreen = (
+        args.interactive
+        and args.fullscreen
+        and sys.stdout.isatty() and sys.stderr.isatty()
+    )
+    try:
+        from .tui_fullscreen import HAS_FULLSCREEN
+    except Exception:
+        HAS_FULLSCREEN = False
+    if _use_fullscreen and not HAS_FULLSCREEN:
+        _use_fullscreen = False
+
+    # Textual takes priority over prompt_toolkit fullscreen when both would
+    # apply — it's the more reliable full-screen option.
+    _use_textual = (
+        args.interactive and args.textual
+        and sys.stdout.isatty() and sys.stderr.isatty()
+    )
+    try:
+        from .tui_textual import HAS_TEXTUAL
+    except Exception:
+        HAS_TEXTUAL = False
+    if _use_textual and not HAS_TEXTUAL:
+        _use_textual = False
+        console.print(Text.from_markup("[yellow]warn:[/yellow] textual not installed — falling back to line-based REPL. Run [cyan]pip install textual[/cyan]."))
+
     async def _drive() -> None:
         if args.prompt:
             await _run_one_turn(state, args.prompt)
-            if args.interactive:
-                console.print("")
-                await _repl(state)
+            if not args.interactive:
+                return
+
+        if _use_textual:
+            await _drive_textual(state, args)
+        elif _use_fullscreen:
+            await _drive_fullscreen(state, args)
         else:
             await _repl(state)
 

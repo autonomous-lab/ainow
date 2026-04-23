@@ -1,0 +1,405 @@
+"""Textual-based full-screen TUI for AINow.
+
+Uses Textual (https://textual.textualize.io) — a modern Python TUI framework
+with differential rendering, CSS-driven layout, and proper cross-platform
+terminal handling.
+
+Layout:
+  * Header (branded banner)
+  * VerticalScroll chat area (mounts one ChatMessage per user/assistant/tool turn)
+  * Footer (status line: cwd, agent, model, ctx, session tok/s)
+  * Input at the bottom
+
+The key win over the prompt_toolkit full-screen attempt: Textual handles the
+differential rendering + alt-screen + Windows terminal quirks reliably, so the
+input/footer stay anchored and tokens stream cleanly into a scrollable area.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from pathlib import Path
+from typing import Awaitable, Callable, Optional
+
+try:
+    from textual.app import App, ComposeResult
+    from textual.binding import Binding
+    from textual.containers import Container, Vertical, VerticalScroll
+    from textual.reactive import reactive
+    from textual.widgets import Footer, Header, Input, Static
+    _HAS_TEXTUAL = True
+except ImportError:
+    _HAS_TEXTUAL = False
+
+
+HAS_TEXTUAL = _HAS_TEXTUAL
+
+
+# Cached git-branch lookup — same as in tui_fullscreen
+_BRANCH_CACHE: dict = {}
+_BRANCH_TTL = 5.0
+
+
+def _git_branch_cached(cwd: str) -> str:
+    now = time.monotonic()
+    hit = _BRANCH_CACHE.get(cwd)
+    if hit and now - hit[0] < _BRANCH_TTL:
+        return hit[1]
+    branch = ""
+    try:
+        p = Path(cwd)
+        for candidate in [p] + list(p.parents):
+            head = candidate / ".git" / "HEAD"
+            if head.exists():
+                line = head.read_text(encoding="utf-8", errors="replace").strip()
+                if line.startswith("ref: refs/heads/"):
+                    branch = line[len("ref: refs/heads/"):]
+                else:
+                    branch = line[:8]
+                break
+    except Exception:
+        pass
+    _BRANCH_CACHE[cwd] = (now, branch)
+    return branch
+
+
+if _HAS_TEXTUAL:
+
+    class ChatMessage(Static):
+        """One message bubble. Can be appended to while streaming."""
+
+        DEFAULT_CSS = """
+        ChatMessage {
+            padding: 0 1;
+            margin: 0 0 1 0;
+            height: auto;
+        }
+        ChatMessage.user {
+            color: $primary;
+            text-style: bold;
+        }
+        ChatMessage.assistant { color: $text; }
+        ChatMessage.tool { color: $success; }
+        ChatMessage.error { color: $error; }
+        ChatMessage.system { color: $text-muted; text-style: italic; }
+        """
+
+        def __init__(self, role: str, text: str = "", markup: bool = False):
+            super().__init__(text, markup=markup)
+            self.role = role
+            self.add_class(role)
+            self._buffer = text
+
+        def append(self, text: str) -> None:
+            self._buffer += text
+            self.update(self._buffer)
+
+        def set_text(self, text: str) -> None:
+            self._buffer = text
+            self.update(self._buffer)
+
+
+    class StatusBar(Static):
+        """One-line status bar showing model, ctx%, permissions, session stats."""
+
+        DEFAULT_CSS = """
+        StatusBar {
+            height: 1;
+            background: $boost;
+            color: $text;
+            padding: 0 1;
+        }
+        """
+
+        def __init__(self, *, state, **kwargs):
+            # Pre-render an initial status string at construction time so the
+            # bar is always visible, even if on_mount hasn't fired yet.
+            super().__init__("[dim]AINow · loading…[/dim]", markup=True, **kwargs)
+            self._state = state
+
+        def on_mount(self):
+            self.set_interval(1.0, self.refresh_status)
+            # Render something IMMEDIATELY so the bar is visible even if the
+            # state isn't fully populated yet.
+            self.update("[dim]loading…[/dim]")
+            self.refresh_status()
+
+        def refresh_status(self) -> None:
+            try:
+                s = self._state
+                used, mx = s.context_stats()
+                pct = int(used / mx * 100) if mx else 0
+                pct_color = "green" if pct < 70 else "yellow" if pct < 85 else "red"
+                perm = "yolo" if s.yolo else "confirm"
+                perm_color = "yellow" if s.yolo else "green"
+                cwd = Path(s.llm._cwd).resolve() if s.llm and s.llm._cwd else Path.cwd()
+                try:
+                    home = Path.home().resolve()
+                    try:
+                        short = "~/" + str(cwd.relative_to(home)).replace("\\", "/")
+                    except ValueError:
+                        short = str(cwd)
+                except Exception:
+                    short = str(cwd)
+                branch = _git_branch_cached(str(cwd))
+                branch_txt = f" ([white]{branch}[/white])" if branch else ""
+
+                model_name = s.model_label()
+                if len(model_name) > 40:
+                    model_name = model_name[:39] + "…"
+                try:
+                    from .services.model_manager import model_manager as _mm
+                    reasoning = "high" if _mm.thinking_enabled else "off"
+                except Exception:
+                    reasoning = "off"
+                mx_fmt = f"{mx // 1024}K" if mx and mx >= 1024 else (f"{mx}" if mx else "?")
+
+                sess = ""
+                sess_tok = getattr(s, "session_total_tokens", 0)
+                sess_sec = getattr(s, "session_total_seconds", 0.0)
+                if sess_tok > 0 and sess_sec > 0:
+                    avg = sess_tok / sess_sec
+                    sess_fmt = f"{sess_tok}" if sess_tok < 1000 else f"{sess_tok // 1000}.{(sess_tok % 1000) // 100}k"
+                    sess = f"  ·  [white]{sess_fmt} tok @ {avg:.1f} tok/s[/white]"
+
+                self.update(
+                    f"[cyan]{short}[/cyan]{branch_txt}  ·  [dim]agent[/dim] [cyan]{s.agent_name}[/cyan]  "
+                    f"·  [dim]ctx[/dim] [{pct_color}]{pct}%/{mx_fmt}[/{pct_color}]  "
+                    f"·  [{perm_color}]{perm}[/{perm_color}]{sess}  "
+                    f"·  [cyan bold]{model_name}[/cyan bold]  ·  [dim]reason[/dim] [white]{reasoning}[/white]"
+                )
+            except Exception as e:
+                self.update(f"[red]statusbar error: {e}[/red]")
+
+
+    class AINowApp(App):
+        """Textual app for the AINow CLI."""
+
+        CSS = """
+        Screen {
+            background: $background;
+            layout: vertical;
+        }
+
+        #chat {
+            height: 1fr;
+            padding: 1 2 0 2;
+            overflow-y: auto;
+            background: $surface;
+        }
+
+        #input {
+            height: 3;
+            margin: 0;
+            border: heavy $primary-lighten-3;
+            padding: 0 1;
+        }
+
+        Input {
+            background: $background;
+        }
+        """
+
+        BINDINGS = [
+            Binding("ctrl+c", "interrupt_or_quit", "Interrupt / Quit", priority=True),
+            Binding("ctrl+d", "quit", "Exit", priority=True),
+            Binding("ctrl+o", "toggle_tool_output", "Tool out"),
+            Binding("ctrl+t", "toggle_thinking", "Think"),
+            Binding("shift+tab", "thinking_mode", "Reason"),
+            Binding("ctrl+l", "pick_model", "Model"),
+            Binding("pageup", "scroll_up", "Scroll up", show=False),
+            Binding("pagedown", "scroll_down", "Scroll down", show=False),
+        ]
+
+        def __init__(
+            self,
+            *,
+            state,
+            submit_handler: Callable[[str], Awaitable[None]],
+            slash_handler: Callable[[str], Awaitable[bool]],
+            bash_shortcut_handler: Callable[[str, bool], Awaitable[None]],
+            keyshortcut_handler: Callable[[str], Awaitable[None]],
+        ):
+            super().__init__()
+            self.state = state
+            self._submit = submit_handler
+            self._slash = slash_handler
+            self._bash = bash_shortcut_handler
+            self._keyshortcut = keyshortcut_handler
+            self._turn_task: Optional[asyncio.Task] = None
+            self._current_assistant_msg: Optional[ChatMessage] = None
+
+        # --- layout -------------------------------------------------------
+
+        def compose(self) -> ComposeResult:
+            yield VerticalScroll(id="chat")
+            yield StatusBar(state=self.state)
+            yield Input(placeholder="Type a message, /help for commands, Ctrl+D to exit…", id="input")
+
+        async def on_mount(self) -> None:
+            # Banner as the first message.
+            s = self.state
+            try:
+                from .services.model_manager import model_manager as _mm
+                ctx = _mm.get_context_size()
+            except Exception:
+                ctx = 0
+            ctx_fmt = f"{ctx // 1024}K" if ctx >= 1024 else (f"{ctx}" if ctx else "unknown")
+            banner = (
+                f"[bold magenta]AINow[/bold magenta]  [dim]v1.1[/dim]\n"
+                f"[italic]Local-first AI agent framework — chat, code, voice, vision[/italic]\n\n"
+                f"[dim]model:[/dim]       [cyan]{s.model_label()}[/cyan]  [dim]({s.backend_label()})[/dim]\n"
+                f"[dim]agent:[/dim]       [cyan]{s.agent_name}[/cyan]\n"
+                f"[dim]permissions:[/dim] [{'yellow' if s.yolo else 'green'}]{'yolo' if s.yolo else 'confirm'}[/]\n"
+                f"[dim]context:[/dim]     [cyan]{ctx_fmt}[/cyan]\n\n"
+                f"[dim]/help for commands  ·  /model to switch  ·  Ctrl+D to exit[/dim]"
+            )
+            self._append_message("system", banner, markup=True)
+            self.query_one("#input", Input).focus()
+
+        # --- helpers ------------------------------------------------------
+
+        def _append_message(self, role: str, text: str, markup: bool = False) -> ChatMessage:
+            msg = ChatMessage(role, text, markup=markup)
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.mount(msg)
+            chat.scroll_end(animate=False)
+            return msg
+
+        def _scroll_to_end(self) -> None:
+            try:
+                self.query_one("#chat", VerticalScroll).scroll_end(animate=False)
+            except Exception:
+                pass
+
+        # --- ChatLog-style API the CLI callbacks can use -----------------
+
+        def log_user(self, text: str) -> None:
+            self._append_message("user", f"› {text}")
+
+        def log_tool_arrow(self, name: str, arg_summary: str) -> None:
+            self._append_message(
+                "tool", f"[cyan]→[/cyan] [bold]{name}[/bold]  [dim]{arg_summary}[/dim]",
+                markup=True,
+            )
+
+        def log_tool_result(self, name: str, mark: str, detail: str, is_error: bool) -> None:
+            color = "red" if is_error else "green"
+            self._append_message(
+                "tool",
+                f"[{color}]{mark}[/{color}] [cyan]→[/cyan] [bold]{name}[/bold]  [dim]{detail}[/dim]",
+                markup=True,
+            )
+
+        def log_system(self, text: str, style: str = "dim") -> None:
+            self._append_message("system", f"[{style}]{text}[/{style}]", markup=True)
+
+        def log_error(self, text: str) -> None:
+            self._append_message("error", f"[red]{text}[/red]", markup=True)
+
+        def log_markup(self, rich_markup: str) -> None:
+            self._append_message("system", rich_markup, markup=True)
+
+        def token_append(self, token: str) -> None:
+            """Append a streaming token to the current assistant message."""
+            if self._current_assistant_msg is None:
+                self._current_assistant_msg = ChatMessage("assistant", "", markup=False)
+                self.query_one("#chat", VerticalScroll).mount(self._current_assistant_msg)
+            self._current_assistant_msg.append(token)
+            self._scroll_to_end()
+
+        def finalize_turn(self) -> None:
+            """Mark the current assistant message as complete. Next token starts a new bubble."""
+            self._current_assistant_msg = None
+
+        # --- input submission --------------------------------------------
+
+        async def on_input_submitted(self, event: Input.Submitted) -> None:
+            text = event.value.strip()
+            event.input.value = ""
+            if not text:
+                return
+            if self._turn_task and not self._turn_task.done():
+                self.log_system("a turn is already running — press Ctrl+C to interrupt", "yellow")
+                return
+            self.log_user(text)
+            self._turn_task = asyncio.create_task(self._handle_line(text))
+
+        async def _handle_line(self, line: str) -> None:
+            if line.startswith("!!"):
+                await self._bash(line[2:].strip(), True)
+                return
+            if line.startswith("!") and not line.startswith("!/"):
+                await self._bash(line[1:].strip(), False)
+                return
+            try:
+                handled = await self._slash(line)
+            except SystemExit:
+                self.exit()
+                return
+            if handled:
+                return
+            try:
+                await self._submit(line)
+            finally:
+                self.finalize_turn()
+                # Refresh the status bar so session tok/s updates right after the turn.
+                try:
+                    self.query_one(StatusBar).refresh_status()
+                except Exception:
+                    pass
+
+        # --- actions ------------------------------------------------------
+
+        async def action_interrupt_or_quit(self) -> None:
+            if self._turn_task and not self._turn_task.done():
+                try:
+                    if self.state.llm is not None:
+                        self.state.llm._running = False
+                except Exception:
+                    pass
+                self.log_system("⏹ interrupt requested", "yellow")
+                return
+            inp = self.query_one("#input", Input)
+            if inp.value:
+                inp.value = ""
+                return
+            self.exit()
+
+        async def action_toggle_tool_output(self) -> None:
+            self.state.show_tool_output = not self.state.show_tool_output
+            self.log_system(f"tool output: {'on' if self.state.show_tool_output else 'off'}")
+
+        async def action_toggle_thinking(self) -> None:
+            self.state.show_thinking = not self.state.show_thinking
+            self.log_system(f"thinking display: {'on' if self.state.show_thinking else 'off'}")
+
+        async def action_thinking_mode(self) -> None:
+            # Two-press confirm preserved via the slash handler
+            await self._keyshortcut("thinking_toggle")
+
+        async def action_pick_model(self) -> None:
+            await self._keyshortcut("pick_model")
+
+        def action_scroll_up(self) -> None:
+            try:
+                self.query_one("#chat", VerticalScroll).scroll_page_up()
+            except Exception:
+                pass
+
+        def action_scroll_down(self) -> None:
+            try:
+                self.query_one("#chat", VerticalScroll).scroll_page_down()
+            except Exception:
+                pass
+
+else:
+
+    class AINowApp:  # type: ignore[no-redef]
+        def __init__(self, **kwargs):
+            raise RuntimeError("textual not installed — pip install textual")
+
+
+__all__ = ["AINowApp", "HAS_TEXTUAL"]
