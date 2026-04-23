@@ -38,6 +38,7 @@ MODEL_ALIASES = {
     "35b": "qwen3.6-35b",
     "35b-iq1": "qwen3.6-35b-iq1",
     "35b-agg": "qwen3.6-35b-agg",
+    "35b-agg-q4": "qwen3.6-35b-agg-q4",
     "27b-iq2": "qwen3.6-27b-iq2",
     "online": "online",
     "online2": "online2",
@@ -111,6 +112,12 @@ def _build_models():
             ],
             "model": _model_path("Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive", "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ2_M.gguf"),
             "mmproj": _model_path("Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive", "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"),
+            "ctx": "32768",
+        },
+        "qwen3.6-35b-agg-q4": {
+            "name": "Qwen 3.6 35B Aggressive (uncensored, Q4)",
+            "model": os.path.join(os.path.expanduser("~"), ".lmstudio", "models", "HauhauCS", "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive", "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"),
+            "mmproj": os.path.join(os.path.expanduser("~"), ".lmstudio", "models", "HauhauCS", "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive", "mmproj-Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-f16.gguf"),
             "ctx": "32768",
         },
         "qwen3.6-27b-iq2": {

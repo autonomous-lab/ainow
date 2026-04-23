@@ -79,6 +79,7 @@ You can also switch models from the UI dropdown at runtime — no restart needed
 | `-m 35b` | Qwen 3.6 35B A3B UD-Q2_K_XL | ~13 GB | MoE, 3B active — fast for its size |
 | `-m 35b-iq1` | Qwen 3.6 35B A3B UD-IQ1_M | ~10 GB | MoE, smaller quant — fits 16 GB VRAM |
 | `-m 35b-agg` | Qwen 3.6 35B Aggressive IQ2_M (uncensored) | ~12 GB | MoE + vision mmproj (HauhauCS) |
+| `-m 35b-agg-q4` | Qwen 3.6 35B Aggressive Q4_K_M (uncensored) | ~20 GB | MoE + vision, higher quality quant (HauhauCS) |
 | `-m 27b-iq2` | Qwen 3.6 27B UD-IQ2_M | ~11 GB | Dense + vision, local `~/.lmstudio/models/unsloth/Qwen3.6-27B-GGUF/` |
 | `-m gemma` | Gemma 4 E4B Aggressive (uncensored) | ~5 GB | Custom — set `MODEL_GEMMA` |
 | `-m heretic` | Gemma 4 26B Heretic (uncensored) | ~13 GB | Custom — set `MODEL_HERETIC` + `_CTX` + `_NGL` |
