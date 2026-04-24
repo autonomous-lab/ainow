@@ -4319,6 +4319,11 @@ function handleControlMessage(msg) {
         chatHistory[streamIdx].tokenCount = _thinkingTokenCount || 0;
         // Start timer from thinking start (if thinking happened) or now
         chatHistory[streamIdx].streamStartTime = _thinkingStartTime || performance.now();
+        // Consume: clear so the NEXT turn (where thinking may not happen)
+        // doesn't reuse this stale timestamp, which produced the "3376s /
+        // 0.3 tok/s" bug.
+        _thinkingTokenCount = 0;
+        _thinkingStartTime = 0;
       }
       chatHistory[streamIdx].tokenCount++;
       chatHistory[streamIdx].streamEndTime = performance.now();
