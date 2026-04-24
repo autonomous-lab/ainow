@@ -761,16 +761,23 @@ if _HAS_TEXTUAL:
             try:
                 from .services.model_manager import model_manager as _mm
                 ctx = _mm.get_context_size()
+                vision_on = bool(_mm.vision_enabled)
+                thinking_on = bool(_mm.thinking_enabled)
             except Exception:
                 ctx = 0
+                vision_on, thinking_on = True, False
             ctx_fmt = f"{ctx // 1024}K" if ctx >= 1024 else (f"{ctx}" if ctx else "unknown")
+            vision_color = "green" if vision_on else "dim"
+            thinking_color = "green" if thinking_on else "dim"
             banner = (
                 f"[bold magenta]AINow[/bold magenta]  [dim]v1.1[/dim]\n"
                 f"[italic]Local-first AI agent framework — chat, code, voice, vision[/italic]\n\n"
                 f"[dim]model:[/dim]       [cyan]{s.model_label()}[/cyan]  [dim]({s.backend_label()})[/dim]\n"
                 f"[dim]agent:[/dim]       [cyan]{s.agent_name}[/cyan]\n"
                 f"[dim]permissions:[/dim] [{'yellow' if s.yolo else 'green'}]{'yolo' if s.yolo else 'confirm'}[/]\n"
-                f"[dim]context:[/dim]     [cyan]{ctx_fmt}[/cyan]\n\n"
+                f"[dim]context:[/dim]     [cyan]{ctx_fmt}[/cyan]\n"
+                f"[dim]vision:[/dim]      [{vision_color}]{'on' if vision_on else 'off'}[/{vision_color}]\n"
+                f"[dim]thinking:[/dim]    [{thinking_color}]{'on' if thinking_on else 'off'}[/{thinking_color}]\n\n"
                 f"[dim]/help for commands  ·  /config to tune  ·  Ctrl+D to exit[/dim]\n"
                 f"[dim][white]F7[/white] copies the chat transcript to the clipboard[/dim]"
             )

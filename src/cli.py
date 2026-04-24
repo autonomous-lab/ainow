@@ -148,6 +148,19 @@ STREAMED_TOKENS_IN_TURN = 0
 
 def _banner(model_label: str, backend: str, permissions: str, ctx: int, agent: str, minimal: bool = False) -> None:
     """little-coder-style startup banner."""
+    # Read vision + thinking status from the singleton so we don't have to
+    # plumb them through every call site.
+    try:
+        from .services.model_manager import model_manager as _mm
+        vision_on = bool(_mm.vision_enabled)
+        thinking_on = bool(_mm.thinking_enabled)
+    except Exception:
+        vision_on, thinking_on = True, False
+    vision_color = "green" if vision_on else "dim"
+    thinking_color = "green" if thinking_on else "dim"
+    vision_txt = "on" if vision_on else "off"
+    thinking_txt = "on" if thinking_on else "off"
+
     if minimal:
         perm_color = "yellow" if permissions == "yolo" else "green"
         console.print(Text.from_markup(
@@ -156,6 +169,8 @@ def _banner(model_label: str, backend: str, permissions: str, ctx: int, agent: s
             f"agent [cyan]{agent}[/cyan]  ·  "
             f"[{perm_color}]{permissions}[/]  ·  "
             f"ctx [cyan]{_fmt_ctx(ctx) if ctx else 'unknown'}[/cyan]  ·  "
+            f"vision [{vision_color}]{vision_txt}[/{vision_color}]  ·  "
+            f"think [{thinking_color}]{thinking_txt}[/{thinking_color}]  ·  "
             f"[dim]/help[/dim]"
         ))
         return
@@ -167,8 +182,10 @@ def _banner(model_label: str, backend: str, permissions: str, ctx: int, agent: s
         Text.from_markup(f"[dim]agent:       [/dim][cyan]{agent}[/cyan]"),
         Text.from_markup(f"[dim]permissions: [/dim][{'yellow' if permissions == 'yolo' else 'green'}]{permissions}[/{'yellow' if permissions == 'yolo' else 'green'}]"),
         Text.from_markup(f"[dim]context:     [/dim][cyan]{_fmt_ctx(ctx) if ctx else 'unknown'}[/cyan]"),
+        Text.from_markup(f"[dim]vision:      [/dim][{vision_color}]{vision_txt}[/{vision_color}]"),
+        Text.from_markup(f"[dim]thinking:    [/dim][{thinking_color}]{thinking_txt}[/{thinking_color}]"),
         Text(""),
-        Text.from_markup("[dim]/help for commands  ·  /model to switch  ·  /quit to exit[/dim]"),
+        Text.from_markup("[dim]/help for commands  ·  /config to tune  ·  /quit to exit[/dim]"),
     )
     console.print(Panel(body, border_style="magenta", padding=(0, 2)))
 
