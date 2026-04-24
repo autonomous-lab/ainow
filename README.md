@@ -2,6 +2,8 @@
 
 **Local-first AI agent framework** — chat, voice, vision, coding, scheduled background tasks, MCP. Runs entirely on your GPU, no cloud APIs required.
 
+## Web UI
+
 ![AINow UI](docs/ui-screenshot.png)
 
 ```bash
@@ -9,10 +11,19 @@ python main.py
 # Open http://localhost:3040
 ```
 
+## Headless CLI
+
+![AINow CLI](docs/cli-screenshot.png)
+
+```bash
+python -m src.cli -i
+```
+
 ## Documentation
 
 | Topic | Docs |
 |---|---|
+| **Available models** — built-in aliases, VRAM reference, runtime switching | [docs/models.md](docs/models.md) |
 | **Headless CLI / TUI** — slash commands, keyboard shortcuts, `@path` expansion | [docs/cli.md](docs/cli.md) |
 | **Agents, MCP, scheduled tasks, tools, agentic loop, UI features** | [docs/agents-mcp.md](docs/agents-mcp.md) |
 | **Setup, env vars, custom models, security, project structure** | [docs/setup.md](docs/setup.md) |
@@ -50,57 +61,6 @@ LISTENING ──EndOfTurn──→ RESPONDING ──Done──→ LISTENING
     ↑                        │
     └────StartOfTurn─────────┘  (barge-in via Silero VAD)
 ```
-
-## Usage
-
-```bash
-# Web UI
-python main.py                    # default: Qwen 9B
-python main.py -m 4b              # smaller model (less VRAM)
-python main.py -m 27b             # larger Qwen 3.5 dense
-python main.py -m 35b-agg         # Qwen 3.6 35B MoE (uncensored, with vision)
-python main.py -m 27b-iq2         # Qwen 3.6 27B (local LM Studio path)
-python main.py -m gemma           # custom Gemma 4 (uncensored, via MODEL_GEMMA env)
-python main.py -m heretic         # custom Gemma 4 26B (uncensored, via MODEL_HERETIC env)
-python main.py -m online          # Cloud provider (OpenRouter, OpenAI, etc.)
-
-# Headless CLI (same tools, agents, skill packs) — see docs/cli.md
-python -m src.cli -i                          # Textual TUI
-python -m src.cli "refactor foo.py"           # one-shot
-python -m src.cli --yolo "run the tests"      # auto-approve tool calls
-```
-
-You can switch models from the UI dropdown at runtime — no restart needed. If the web UI is already running a model, `python -m src.cli` attaches to it instead of restarting llama-server (sub-second cold start).
-
-## Available models
-
-| Flag | Model | Size | Notes |
-|------|-------|------|-------|
-| `-m 0.8b` | Qwen 3.5 0.8B Q8_0 | ~1 GB | Fastest, minimal quality |
-| `-m 2b` | Qwen 3.5 2B Q4_K_M | ~1.5 GB | Budget GPU |
-| `-m 4b` | Qwen 3.5 4B Q4_K_M | ~2.8 GB | Good for 8 GB VRAM |
-| `-m 9b` | Qwen 3.5 9B UD-Q4_K_XL | ~6 GB | **Default**, best balance |
-| `-m 27b` | Qwen 3.5 27B UD-IQ3_XXS | ~11 GB | Highest quality dense |
-| `-m 35b` | Qwen 3.6 35B A3B UD-Q2_K_XL | ~13 GB | MoE, 3B active — fast for its size |
-| `-m 35b-agg` | Qwen 3.6 35B Aggressive IQ2_M (uncensored) | ~12 GB | MoE + vision mmproj (HauhauCS) |
-| `-m 35b-agg-q4` | Qwen 3.6 35B Aggressive Q4_K_M (uncensored) | ~20 GB | MoE + vision, higher quality quant (HauhauCS) |
-| `-m 27b-iq2` | Qwen 3.6 27B UD-IQ2_M | ~11 GB | Dense + vision, local `~/.lmstudio/models/unsloth/Qwen3.6-27B-GGUF/` |
-| `-m gemma` | Gemma 4 E4B Aggressive (uncensored) | ~5 GB | Custom — set `MODEL_GEMMA` |
-| `-m heretic` | Gemma 4 26B Heretic (uncensored) | ~13 GB | Custom — set `MODEL_HERETIC` + `_CTX` + `_NGL` |
-| `-m online` | Any OpenAI-compatible API | 0 GB | Cloud, needs API key |
-
-Most local Qwen models include vision (mmproj). Exceptions: `35b` (Qwen 3.6 A3B Q2 — text-only on the `unsloth` repo); `35b-agg` and `35b-agg-q4` ship their own mmproj. The model manager starts llama-server automatically and downloads models from HuggingFace on first run.
-
-See [docs/setup.md](docs/setup.md) for custom models, per-model overrides, and recommended GPU setups.
-
-## VRAM quick reference
-
-| VRAM | Recommended | Command |
-|------|-------------|---------|
-| 8 GB | Gemma 4 E4B | `python main.py -m gemma` |
-| 16 GB | Gemma 4 26B Heretic | `python main.py -m heretic` |
-| 24 GB | Qwen 27B or Qwen 3.6 35B A3B | `python main.py -m 27b` / `-m 35b` |
-| No GPU | Gemma 31B free (OpenRouter) | `python main.py -m online2` |
 
 ## License
 
