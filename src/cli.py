@@ -1096,23 +1096,30 @@ def _attach_to_running_llama(model_id: str, config: dict, port: int) -> bool:
         from .services.model_manager import model_manager, MODELS, COMMON_ARGS
         model_manager._current_model = model_id
         cfg = MODELS.get(model_id, {})
-        # Prefer the per-model config, then the running server's /props, then
-        # the global COMMON_ARGS default. Never leave it at 0 — otherwise the
-        # banner shows "context: unknown" and the toolbar shows 0%.
+        # Probe /props FIRST. When attaching to a server someone else
+        # started (e.g. the web UI launched it with a 128K override), we
+        # must trust the running state, not our static per-model default
+        # — the config's "ctx" is just the value WE would pass if WE
+        # started the server. Fall back to cfg, then COMMON_ARGS, so we
+        # never leave ctx_val at 0 (shows "context: unknown" in the UI).
         ctx_val = 0
-        if "ctx" in cfg:
+        try:
+            props = httpx.get(f"http://127.0.0.1:{port}/props", timeout=2.0)
+            if props.status_code == 200:
+                data = props.json()
+                # Newer llama.cpp exposes `default_generation_settings.n_ctx`
+                # or `n_ctx` at top level.
+                ctx_val = int(
+                    data.get("n_ctx")
+                    or data.get("default_generation_settings", {}).get("n_ctx")
+                    or 0
+                )
+        except Exception:
+            pass
+        if not ctx_val and "ctx" in cfg:
             try:
                 ctx_val = int(cfg["ctx"])
             except (TypeError, ValueError):
-                pass
-        if not ctx_val:
-            try:
-                props = httpx.get(f"http://127.0.0.1:{port}/props", timeout=2.0)
-                if props.status_code == 200:
-                    data = props.json()
-                    # Newer llama.cpp exposes `default_generation_settings` or `n_ctx` at top level
-                    ctx_val = int(data.get("n_ctx") or data.get("default_generation_settings", {}).get("n_ctx") or 0)
-            except Exception:
                 pass
         if not ctx_val:
             try:
