@@ -224,30 +224,20 @@ if _HAS_TEXTUAL:
         def on_click(self, event) -> None:
             """Right-click is context-sensitive:
 
-            * If there's an active text selection anywhere on screen →
-              COPY the selection to the clipboard.
-            * Otherwise → PASTE the clipboard content into the Input.
-
-            Textual captures mouse events before Windows Terminal's native
-            right-click handling can fire, so we implement both sides
-            ourselves via pyperclip + Screen.get_selected_text()."""
+            * If there was an active selection at MouseDown, the App
+              already copied it (see AINowApp.on_mouse_down) and set
+              `_just_copied_selection`. We consume the flag and skip
+              paste so you don't accidentally overwrite the clipboard.
+            * Otherwise → PASTE the clipboard content into the Input."""
             if getattr(event, "button", 0) != 3:
                 return
             event.stop()
-            # Try to copy the current Textual text selection first.
-            try:
-                sel = self.screen.get_selected_text() or ""
-            except Exception:
-                sel = ""
-            if sel:
-                try:
-                    import pyperclip
-                    pyperclip.copy(sel)
-                    self.screen.clear_selection()
-                except Exception:
-                    pass
+            # Did the App already copy a selection on MouseDown?
+            app = self.app
+            if getattr(app, "_just_copied_selection", False):
+                app._just_copied_selection = False
                 return
-            # No selection → fall back to paste.
+            # No selection → paste.
             try:
                 import pyperclip
                 text = pyperclip.paste()
@@ -754,6 +744,10 @@ if _HAS_TEXTUAL:
             self._current_assistant_msg: Optional[ChatMessage] = None
             self._current_thinking_msg: Optional[ChatMessage] = None
             self._spinner: Optional[ThinkingSpinner] = None
+            # Right-click copy flag: set on MouseDown (before Textual's
+            # default handler clears the selection on MouseUp), consumed
+            # on the subsequent Click so the Input knows to skip paste.
+            self._just_copied_selection: bool = False
             # Input history — loaded from disk on startup, appended on submit,
             # persisted on exit.
             self._history: list[str] = []
@@ -1234,24 +1228,29 @@ if _HAS_TEXTUAL:
             except Exception:
                 pass
 
-        def on_click(self, event) -> None:
-            """App-level right-click: copy the current Textual selection.
+        def on_mouse_down(self, event) -> None:
+            """Capture the active text selection on RIGHT-click BEFORE
+            Textual's default MouseUp handler clears it.
 
-            Fires when the click bubbled up past the Input (i.e. the user
-            right-clicked on the chat area rather than the Input itself).
-            Paste has no meaningful target outside the Input, so we only
-            handle the copy side here."""
+            Textual's Screen._on_mouse_down+MouseUp sequence calls
+            clear_selection() when the down+up land on the same offset
+            (regardless of button), so reading the selection from
+            `on_click` was racy — usually empty by the time it ran. Here
+            we read on MouseDown, set a flag so the Input's on_click
+            knows not to paste, and let the default MouseUp still clear
+            the highlight visually."""
             if getattr(event, "button", 0) != 3:
                 return
             try:
                 sel = self.screen.get_selected_text() or ""
             except Exception:
                 sel = ""
+            self._just_copied_selection = False
             if sel:
                 try:
                     import pyperclip
                     pyperclip.copy(sel)
-                    self.screen.clear_selection()
+                    self._just_copied_selection = True
                     self.log_system(f"copied {len(sel)} chars to clipboard", "green")
                 except Exception as e:
                     self.log_error(f"copy failed: {e}")
