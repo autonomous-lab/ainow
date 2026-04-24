@@ -1508,6 +1508,15 @@ class LLMService:
             elif self._running:
                 self._strip_old_media()
                 await self._on_done()
+            else:
+                # Generation stopped mid-flight (Ctrl+C, repetition
+                # detector, etc.) — still call _on_done so the awaiting
+                # orchestrator (_run_one_turn → done.wait()) unblocks.
+                # Without this the REPL thinks the turn is still running
+                # and rejects every subsequent submit with
+                # "a turn is already running". Partial content, if any,
+                # was already appended to history earlier on the break.
+                await self._on_done()
 
         except asyncio.CancelledError:
             if final_content:
