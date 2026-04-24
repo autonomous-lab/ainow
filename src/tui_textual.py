@@ -222,14 +222,32 @@ if _HAS_TEXTUAL:
                 self._insert_flattened(text)
 
         def on_click(self, event) -> None:
-            """Right-click pastes from the system clipboard.
+            """Right-click is context-sensitive:
+
+            * If there's an active text selection anywhere on screen →
+              COPY the selection to the clipboard.
+            * Otherwise → PASTE the clipboard content into the Input.
 
             Textual captures mouse events before Windows Terminal's native
-            right-click-to-paste can fire, so we have to implement it
-            ourselves. Read the clipboard via pyperclip and insert the
-            content flattened (newlines → spaces) like bracketed paste."""
+            right-click handling can fire, so we implement both sides
+            ourselves via pyperclip + Screen.get_selected_text()."""
             if getattr(event, "button", 0) != 3:
                 return
+            event.stop()
+            # Try to copy the current Textual text selection first.
+            try:
+                sel = self.screen.get_selected_text() or ""
+            except Exception:
+                sel = ""
+            if sel:
+                try:
+                    import pyperclip
+                    pyperclip.copy(sel)
+                    self.screen.clear_selection()
+                except Exception:
+                    pass
+                return
+            # No selection → fall back to paste.
             try:
                 import pyperclip
                 text = pyperclip.paste()
@@ -237,7 +255,6 @@ if _HAS_TEXTUAL:
                 return
             if text:
                 self._insert_flattened(text)
-            event.stop()
 
         def _insert_flattened(self, text: str) -> None:
             # Collapse CRLF/CR/LF and runs of whitespace so "\n\n" doesn't
@@ -1216,6 +1233,28 @@ if _HAS_TEXTUAL:
                 self.query_one(StatusBar).refresh_status()
             except Exception:
                 pass
+
+        def on_click(self, event) -> None:
+            """App-level right-click: copy the current Textual selection.
+
+            Fires when the click bubbled up past the Input (i.e. the user
+            right-clicked on the chat area rather than the Input itself).
+            Paste has no meaningful target outside the Input, so we only
+            handle the copy side here."""
+            if getattr(event, "button", 0) != 3:
+                return
+            try:
+                sel = self.screen.get_selected_text() or ""
+            except Exception:
+                sel = ""
+            if sel:
+                try:
+                    import pyperclip
+                    pyperclip.copy(sel)
+                    self.screen.clear_selection()
+                    self.log_system(f"copied {len(sel)} chars to clipboard", "green")
+                except Exception as e:
+                    self.log_error(f"copy failed: {e}")
 
         def action_copy_chat(self) -> None:
             """Copy the whole chat transcript to the clipboard via OSC 52.
