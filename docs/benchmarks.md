@@ -36,6 +36,7 @@ These match the test commands little-coder uses (which mirror Aider's own benchm
 | Model | Backend | pass_1 | pass_2 | fail | **pass rate** | wall-clock | mean / exo |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Qwen 3.5 9B (UD-Q4_K_XL) | local llama.cpp | 40 | 5 | 4 | **91.8%** | 82 min | 100 s |
+| Qwen 3.6 27B (UD-IQ2_M) | local llama.cpp | 46 | 3 | 0 | **100.0%** | 108 min | 132 s |
 
 #### Comparison vs little-coder
 
