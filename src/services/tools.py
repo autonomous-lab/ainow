@@ -491,6 +491,70 @@ _RESERVED_PORT_PATTERNS = [
 ]
 
 
+def _kill_proc_tree(pid: int) -> None:
+    """Kill a process and all its descendants.
+
+    Without this, `proc.kill()` only terminates the immediate child
+    (cmd.exe / bash.exe). When the agent runs `go test` / `cargo test`
+    / `pytest`, the shell forks a test binary that survives as an
+    orphan — a runaway allocator can then eat all system RAM.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    try:
+        children = parent.children(recursive=True)
+    except psutil.NoSuchProcess:
+        children = []
+    for child in children:
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            pass
+    try:
+        parent.kill()
+    except psutil.NoSuchProcess:
+        pass
+
+
+_BASH_MEMORY_CAP_GB = float(os.getenv("AINOW_BASH_MEMORY_CAP_GB", "8"))
+
+
+async def _watch_memory(pid: int, cap_bytes: int, killed: list) -> None:
+    """Poll process-tree RSS every second; tree-kill if it exceeds cap.
+
+    `killed` is a one-element list used as a mutable flag so the caller
+    can report OOM rather than the (likely empty) stdout buffer.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return
+    while True:
+        try:
+            await asyncio.sleep(1.0)
+            parent = psutil.Process(pid)
+            total = parent.memory_info().rss
+            for child in parent.children(recursive=True):
+                try:
+                    total += child.memory_info().rss
+                except psutil.NoSuchProcess:
+                    pass
+            if total > cap_bytes:
+                _kill_proc_tree(pid)
+                killed.append(total)
+                return
+        except psutil.NoSuchProcess:
+            return
+        except asyncio.CancelledError:
+            return
+
+
 async def _tool_bash(args: dict, cwd: str) -> str:
     command = args.get("command")
     if not isinstance(command, str):
@@ -515,6 +579,7 @@ async def _tool_bash(args: dict, cwd: str) -> str:
                 "Use 3000, 5000, 8000, or 8888 instead."
             )
 
+    proc = None
     try:
         # On Windows, create_subprocess_shell uses cmd.exe which mishandles
         # POSIX-style quotes and pipes (e.g. tree -I 'a|b'). Route through
@@ -543,18 +608,44 @@ async def _tool_bash(args: dict, cwd: str) -> str:
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=cwd,
             )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+
+        # Memory watchdog — runaway allocators (test binaries with
+        # infinite-alloc bugs, etc.) can eat all system RAM before the
+        # timeout fires. Cap is configurable via AINOW_BASH_MEMORY_CAP_GB.
+        cap_bytes = int(_BASH_MEMORY_CAP_GB * (1024 ** 3))
+        killed_for_mem: list = []
+        watchdog = asyncio.create_task(_watch_memory(proc.pid, cap_bytes, killed_for_mem))
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            _kill_proc_tree(proc.pid)
+            return f"Error: Command timed out after {timeout}s"
+        finally:
+            watchdog.cancel()
+            try:
+                await watchdog
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if killed_for_mem:
+            used_gb = killed_for_mem[0] / (1024 ** 3)
+            return (
+                f"Error: Command killed for exceeding memory cap "
+                f"({used_gb:.1f}GB > {_BASH_MEMORY_CAP_GB:.1f}GB). "
+                f"A test or build process had a runaway allocation. "
+                f"Raise the cap via AINOW_BASH_MEMORY_CAP_GB env var if intentional."
+            )
+
         output = stdout.decode("utf-8", errors="replace")
         if len(output) > MAX_OUTPUT:
             output = output[:MAX_OUTPUT] + "\n... (truncated)"
         exit_info = f"\n[exit code: {proc.returncode}]" if proc.returncode != 0 else ""
         return (output + exit_info) if output.strip() or exit_info else "(no output)"
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            log.error("Failed to kill timed-out bash process")
-        return f"Error: Command timed out after {timeout}s"
+    except Exception as e:
+        if proc is not None:
+            _kill_proc_tree(proc.pid)
+        log.error(f"Bash tool error: {e}")
+        return f"Error: {e}"
 
 
 _BROWSER_UA = (

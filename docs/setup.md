@@ -122,6 +122,11 @@ LOCAL_TTS_VOICE=1                 # Kokoro TTS
 # Reasoning / thinking cap for small reasoning models (default 120s)
 # AINOW_THINKING_BUDGET_SEC=120
 
+# Per-bash-call memory cap (default 8 GB). On timeout or when this cap is
+# exceeded, the entire process tree is killed (parent + descendants) to
+# stop runaway test/build processes from eating system RAM.
+# AINOW_BASH_MEMORY_CAP_GB=8
+
 # TurboQuant KV cache compression (default: turbo3 = 3.8x smaller KV)
 # KV_CACHE_TYPE=turbo3             # turbo2/turbo3/turbo4 require a TurboQuant llama-server build
                                    # falls back to q4_0 automatically on mainline binaries

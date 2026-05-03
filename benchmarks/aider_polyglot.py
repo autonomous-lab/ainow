@@ -67,17 +67,48 @@ def _copy_exercise(src: Path, dst: Path) -> Path:
     return dst
 
 
+def _kill_tree(pid: int) -> None:
+    """Kill a process and all its descendants. Without this the parent
+    shell dies on timeout but go-test / cargo-test forked binaries can
+    keep running — and a runaway test (infinite alloc loop) eats all
+    system RAM until the box swaps to death."""
+    try:
+        import psutil
+        try:
+            parent = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            return
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        try:
+            parent.kill()
+        except psutil.NoSuchProcess:
+            pass
+    except Exception:
+        pass
+
+
 def _run_cmd(cmd, work: Path, timeout: int, shell: bool = False):
     try:
-        r = subprocess.run(
+        proc = subprocess.Popen(
             cmd, cwd=str(work),
-            capture_output=True, text=True, timeout=timeout, shell=shell,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=shell,
         )
-        return r.returncode == 0, ((r.stdout or "") + (r.stderr or ""))
-    except subprocess.TimeoutExpired:
-        return False, f"timed out after {timeout}s"
     except FileNotFoundError as e:
         return False, f"toolchain missing: {e}"
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return proc.returncode == 0, (out or "") + (err or "")
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc.pid)
+        try:
+            out, err = proc.communicate(timeout=5)
+        except Exception:
+            out, err = "", ""
+        return False, f"timed out after {timeout}s\n{(out or '')}{(err or '')}"
 
 
 # --- Python ---
@@ -169,8 +200,11 @@ def _prepare_java(work: Path):
 
 
 def _run_java_tests(work: Path, timeout: int):
-    gradlew = "gradlew.bat" if os.name == "nt" else "./gradlew"
-    return _run_cmd([gradlew, "test"], work, timeout, shell=True)
+    # On Windows shells, scripts in cwd need an explicit `.\` prefix
+    # otherwise cmd.exe complains "n'est pas reconnu". Use the absolute
+    # path so it's unambiguous regardless of shell quirks.
+    gradlew = work / ("gradlew.bat" if os.name == "nt" else "gradlew")
+    return _run_cmd([str(gradlew), "test"], work, timeout, shell=True)
 
 
 LANGS = {
