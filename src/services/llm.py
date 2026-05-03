@@ -1034,7 +1034,14 @@ class LLMService:
                     delta = _D()
                     delta.content = _delta_dict.get("content")
                     delta.tool_calls = None  # tool calls parsed separately below
-                    _rc = _delta_dict.get("reasoning_content")
+                    # OpenRouter unifies provider-specific reasoning under
+                    # `reasoning`; some providers also expose `reasoning_content`
+                    # on the delta. Read whichever is populated so we don't
+                    # miss the actual chain-of-thought (round-tripping with
+                    # empty `reasoning_content` makes SiliconFlow reject the
+                    # follow-up call: "The reasoning_content in the thinking
+                    # mode must be passed back to the API.").
+                    _rc = _delta_dict.get("reasoning_content") or _delta_dict.get("reasoning")
                     if _rc:
                         if _thinking_start is None:
                             _thinking_start = time.monotonic()
