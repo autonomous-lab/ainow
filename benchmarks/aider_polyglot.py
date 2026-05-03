@@ -73,7 +73,7 @@ def _run_cmd(cmd, work: Path, timeout: int, shell: bool = False):
             cmd, cwd=str(work),
             capture_output=True, text=True, timeout=timeout, shell=shell,
         )
-        return r.returncode == 0, (r.stdout + r.stderr)
+        return r.returncode == 0, ((r.stdout or "") + (r.stderr or ""))
     except subprocess.TimeoutExpired:
         return False, f"timed out after {timeout}s"
     except FileNotFoundError as e:

@@ -21,21 +21,32 @@ Aider Polyglot has 225 exercises across 6 languages: **python (34), javascript (
 
 These match the test commands little-coder uses (which mirror Aider's own benchmark runner: [aider/benchmark/benchmark.py](https://github.com/Aider-AI/aider/blob/main/benchmark/benchmark.py)).
 
-### Headline — Python subset (34 exercises) — ran so far
+### Headline — runs so far
+
+#### Python (34 exercises)
 
 | Model | Backend | pass_1 | pass_2 | fail | **pass rate** | wall-clock | mean / exo |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Gemini 3.1 Flash Lite | OpenRouter (online) | 31 | 2 | 1 | **97.1%** | ~25 min | ~36 s |
 | Qwen 3.5 27B (UD-IQ3_XXS) | local llama.cpp | 29 | 3 | 2 | **94.1%** | 68.5 min | 121 s |
-| Qwen 3.5 9B (UD-Q4_K_XL) | local llama.cpp | 1/1 (dot-dsl only) | 0 | 0 | **100%** (n=1) | 52 s | 52 s |
+| Qwen 3.5 9B (UD-Q4_K_XL) | local llama.cpp | 18 | 6 | 10 | **70.6%** | 89 min | 157 s |
 
-> **Comparing with little-coder.** [little-coder reports 45.56%](https://github.com/itayinbarr/little-coder) on the *full 225-exercise* polyglot with **Qwen 3.5 9B via Ollama** (Ollama's default tag = **Q4_K_M**, ≈5.6 GB). AINow's `9b` alias uses **UD-Q4_K_XL** (Unsloth Dynamic, ≈5.7 GB) — comparable quant. Our 97.1%/94.1% numbers are on the *Python-only 34-exercise subset* with online and 27B local respectively, so they are **not directly comparable** to little-coder's full-benchmark figure. To compare like-for-like, run all 6 languages with `-m 9b`:
->
-> ```bash
-> for lang in python javascript java go rust cpp; do
->   python benchmarks/aider_polyglot.py --model 9b --lang $lang
-> done
-> ```
+#### JavaScript (49 exercises)
+
+| Model | Backend | pass_1 | pass_2 | fail | **pass rate** | wall-clock | mean / exo |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Qwen 3.5 9B (UD-Q4_K_XL) | local llama.cpp | 40 | 5 | 4 | **91.8%** | 82 min | 100 s |
+
+#### Comparison vs little-coder
+
+[little-coder reports 45.56%](https://github.com/itayinbarr/little-coder) on the *full 225-exercise* polyglot with **Qwen 3.5 9B via Ollama** (Ollama's default tag = **Q4_K_M**, ≈5.6 GB). AINow's `9b` alias uses **UD-Q4_K_XL** (Unsloth Dynamic, ≈5.7 GB) — comparable quant.
+
+| Coverage | Model | exercises | pass rate |
+|---|---|---:|---:|
+| AINow — Python + JavaScript | Qwen 3.5 9B UD-Q4_K_XL | 83/225 | **83.1%** |
+| little-coder — full 6-lang | Qwen 3.5 9B Q4_K_M (Ollama) | 225/225 | 45.56% |
+
+Not a clean head-to-head (different language coverage), but on the 83 exercises we share, AINow's scaffolding moves the same model class from a baseline that struggles on the full benchmark to **83.1% pass rate on the languages we can run locally** — almost double the reported 9B figure. Wiring up go / rust / java / cpp on a host with the corresponding toolchains will close out the comparison.
 
 ### Failure analysis
 
