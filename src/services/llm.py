@@ -1333,7 +1333,16 @@ class LLMService:
                     # the signal; we can generalize later if another provider
                     # needs the same treatment.
                     if "deepseek" in (self._model or "").lower():
-                        assistant_msg["reasoning_content"] = "".join(_thinking_buf) if _thinking_buf else ""
+                        # OpenRouter routes deepseek/* to multiple providers
+                        # (DeepSeek, SiliconFlow, AtlasCloud, ...). Different
+                        # backends emit reasoning under either `reasoning` or
+                        # `reasoning_content` and validate the round-trip on
+                        # whichever they used. Send both so any provider that
+                        # picks up the next call accepts it; providers ignore
+                        # unknown fields.
+                        _rc_text = "".join(_thinking_buf) if _thinking_buf else ""
+                        assistant_msg["reasoning_content"] = _rc_text
+                        assistant_msg["reasoning"] = _rc_text
                     elif _thinking_buf:
                         assistant_msg["reasoning_content"] = "".join(_thinking_buf)
                     messages.append(assistant_msg)
