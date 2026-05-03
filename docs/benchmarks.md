@@ -27,6 +27,7 @@ These match the test commands little-coder uses (which mirror Aider's own benchm
 
 | Model | Backend | pass_1 | pass_2 | fail | **pass rate** | wall-clock | mean / exo |
 |---|---|---:|---:|---:|---:|---:|---:|
+| Qwen 3.6 27B (UD-IQ2_M) | local llama.cpp | 32 | 2 | 0 | **100.0%** | 57 min | 101 s |
 | Gemini 3.1 Flash Lite | OpenRouter (online) | 31 | 2 | 1 | **97.1%** | ~25 min | ~36 s |
 | Qwen 3.5 27B (UD-IQ3_XXS) | local llama.cpp | 29 | 3 | 2 | **94.1%** | 68.5 min | 121 s |
 | Qwen 3.5 9B (UD-Q4_K_XL) | local llama.cpp | 18 | 6 | 10 | **70.6%** | 89 min | 157 s |
@@ -44,10 +45,11 @@ These match the test commands little-coder uses (which mirror Aider's own benchm
 
 | Coverage | Model | exercises | pass rate |
 |---|---|---:|---:|
-| AINow — Python + JavaScript | Qwen 3.5 9B UD-Q4_K_XL | 83/225 | **83.1%** |
+| AINow — Python + JavaScript | **Qwen 3.6 27B UD-IQ2_M** | 83/225 | **100.0%** |
+| AINow — Python + JavaScript | Qwen 3.5 9B UD-Q4_K_XL | 83/225 | 83.1% |
 | little-coder — full 6-lang | Qwen 3.5 9B Q4_K_M (Ollama) | 225/225 | 45.56% |
 
-Not a clean head-to-head (different language coverage), but on the 83 exercises we share, AINow's scaffolding moves the same model class from a baseline that struggles on the full benchmark to **83.1% pass rate on the languages we can run locally** — almost double the reported 9B figure. Wiring up go / rust / java / cpp on a host with the corresponding toolchains will close out the comparison.
+Not a clean head-to-head (different language coverage), but on the 83 exercises we share, AINow + Qwen 3.6 27B IQ2 hits a clean 100% — and even the smaller 9B model reaches 83.1% (almost double little-coder's reported figure on the same model class). Wiring up go / rust / java / cpp on a host with the corresponding toolchains will close out the comparison.
 
 ### Failure analysis
 
