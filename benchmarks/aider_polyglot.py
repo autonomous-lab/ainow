@@ -67,6 +67,20 @@ def _copy_exercise(src: Path, dst: Path) -> Path:
     return dst
 
 
+def _run_cmd(cmd, work: Path, timeout: int, shell: bool = False):
+    try:
+        r = subprocess.run(
+            cmd, cwd=str(work),
+            capture_output=True, text=True, timeout=timeout, shell=shell,
+        )
+        return r.returncode == 0, (r.stdout + r.stderr)
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {timeout}s"
+    except FileNotFoundError as e:
+        return False, f"toolchain missing: {e}"
+
+
+# --- Python ---
 def _prepare_python(work: Path):
     stubs = [p for p in work.glob("*.py") if not p.name.endswith("_test.py")]
     tests = list(work.glob("*_test.py"))
@@ -74,15 +88,89 @@ def _prepare_python(work: Path):
 
 
 def _run_python_tests(work: Path, timeout: int):
-    py = sys.executable  # use the same interpreter that runs the harness
-    try:
-        r = subprocess.run(
-            [py, "-m", "pytest", "-x", "-q"],
-            cwd=str(work), capture_output=True, text=True, timeout=timeout,
-        )
-        return r.returncode == 0, (r.stdout + r.stderr)
-    except subprocess.TimeoutExpired:
-        return False, f"timed out after {timeout}s"
+    return _run_cmd([sys.executable, "-m", "pytest", "-x", "-q"], work, timeout)
+
+
+# --- JavaScript ---
+def _prepare_javascript(work: Path):
+    stubs = [
+        p for p in work.glob("*.js")
+        if not p.name.endswith(".spec.js") and p.name not in {"babel.config.js"}
+    ]
+    tests = list(work.glob("*.spec.js"))
+    return stubs, tests
+
+
+def _run_javascript_tests(work: Path, timeout: int):
+    # `npm install` first so jest/babel resolve. Most exercises ship a
+    # package.json with `npm test` wired up to jest.
+    ok, out = _run_cmd(["npm", "install", "--silent", "--no-audit", "--no-fund"], work, 120, shell=True)
+    if not ok:
+        return False, "npm install failed:\n" + out
+    return _run_cmd(["npm", "test", "--silent"], work, timeout, shell=True)
+
+
+# --- Go ---
+def _prepare_go(work: Path):
+    stubs = [
+        p for p in work.glob("*.go")
+        if not p.name.endswith("_test.go")
+    ]
+    tests = list(work.glob("*_test.go"))
+    return stubs, tests
+
+
+def _run_go_tests(work: Path, timeout: int):
+    return _run_cmd(["go", "test", "./..."], work, timeout, shell=True)
+
+
+# --- Rust ---
+def _prepare_rust(work: Path):
+    src = work / "src"
+    tests = work / "tests"
+    stubs = list(src.glob("*.rs")) if src.is_dir() else []
+    test_files = list(tests.glob("*.rs")) if tests.is_dir() else []
+    return stubs, test_files
+
+
+def _run_rust_tests(work: Path, timeout: int):
+    return _run_cmd(["cargo", "test", "--", "--include-ignored"], work, timeout, shell=True)
+
+
+# --- C++ ---
+def _prepare_cpp(work: Path):
+    stubs = [
+        p for p in list(work.glob("*.cpp")) + list(work.glob("*.h"))
+        if not p.name.endswith("_test.cpp")
+    ]
+    tests = list(work.glob("*_test.cpp"))
+    return stubs, tests
+
+
+def _run_cpp_tests(work: Path, timeout: int):
+    build = work / "build"
+    build.mkdir(exist_ok=True)
+    ok, out = _run_cmd(["cmake", "-B", "build", "-S", "."], work, 60, shell=True)
+    if not ok:
+        return False, "cmake configure failed:\n" + out
+    ok, out = _run_cmd(["cmake", "--build", "build", "--config", "Release"], work, 120, shell=True)
+    if not ok:
+        return False, "cmake build failed:\n" + out
+    return _run_cmd(["ctest", "--test-dir", "build", "--output-on-failure"], work, timeout, shell=True)
+
+
+# --- Java ---
+def _prepare_java(work: Path):
+    main = work / "src" / "main" / "java"
+    test = work / "src" / "test" / "java"
+    stubs = list(main.rglob("*.java")) if main.is_dir() else []
+    tests = list(test.rglob("*.java")) if test.is_dir() else []
+    return stubs, tests
+
+
+def _run_java_tests(work: Path, timeout: int):
+    gradlew = "gradlew.bat" if os.name == "nt" else "./gradlew"
+    return _run_cmd([gradlew, "test"], work, timeout, shell=True)
 
 
 LANGS = {
@@ -92,6 +180,41 @@ LANGS = {
         "run_tests": _run_python_tests,
         "hint": "Use Python 3. Run tests with `python -m pytest -x -q`.",
         "test_timeout": 90,
+    },
+    "javascript": {
+        "practice_dir": "javascript/exercises/practice",
+        "prepare": _prepare_javascript,
+        "run_tests": _run_javascript_tests,
+        "hint": "Use ES modules / modern JS. Run tests with `npm test` (jest).",
+        "test_timeout": 180,
+    },
+    "go": {
+        "practice_dir": "go/exercises/practice",
+        "prepare": _prepare_go,
+        "run_tests": _run_go_tests,
+        "hint": "Run tests with `go test ./...`.",
+        "test_timeout": 180,
+    },
+    "rust": {
+        "practice_dir": "rust/exercises/practice",
+        "prepare": _prepare_rust,
+        "run_tests": _run_rust_tests,
+        "hint": "Edit `src/lib.rs`. Run tests with `cargo test -- --include-ignored`.",
+        "test_timeout": 240,
+    },
+    "cpp": {
+        "practice_dir": "cpp/exercises/practice",
+        "prepare": _prepare_cpp,
+        "run_tests": _run_cpp_tests,
+        "hint": "Edit `<exercise>.cpp` / `.h`. Build + test with CMake + ctest.",
+        "test_timeout": 180,
+    },
+    "java": {
+        "practice_dir": "java/exercises/practice",
+        "prepare": _prepare_java,
+        "run_tests": _run_java_tests,
+        "hint": "Edit `src/main/java/...`. Run tests with `./gradlew test`.",
+        "test_timeout": 240,
     },
 }
 

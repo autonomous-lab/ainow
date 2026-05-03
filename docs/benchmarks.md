@@ -6,7 +6,22 @@ AINow ships a benchmark harness to track its agentic-coding capability over time
 
 [Aider Polyglot](https://github.com/Aider-AI/polyglot-benchmark) is a 225-exercise coding benchmark drawn from Exercism's hardest practice problems across 6 languages (cpp, go, java, javascript, python, rust). Each exercise gives the agent a stub file, a test file (read-only), and the spec — the agent has to read, edit, run tests, debug, and commit until tests pass.
 
-### Headline — Python subset (34 exercises)
+### Scope
+
+Aider Polyglot has 225 exercises across 6 languages: **python (34), javascript (49), java (47), go (39), rust (30), cpp (26)**. AINow's harness has all 6 wired up; running them requires the corresponding toolchain on the host:
+
+| language | test command | host tool needed |
+|---|---|---|
+| python | `pytest -x -q` | python (already needed for AINow) |
+| javascript | `npm test` (jest) | `node` + `npm` |
+| go | `go test ./...` | Go toolchain |
+| rust | `cargo test -- --include-ignored` | Rust toolchain |
+| cpp | `cmake -B build -S . && cmake --build build && ctest --test-dir build` | `cmake` + `g++` (or MSVC) |
+| java | `./gradlew test` | JDK + gradle wrapper (ships per exercise) |
+
+These match the test commands little-coder uses (which mirror Aider's own benchmark runner: [aider/benchmark/benchmark.py](https://github.com/Aider-AI/aider/blob/main/benchmark/benchmark.py)).
+
+### Headline — Python subset (34 exercises) — ran so far
 
 | Model | Backend | pass_1 | pass_2 | fail | **pass rate** | wall-clock | mean / exo |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -14,7 +29,13 @@ AINow ships a benchmark harness to track its agentic-coding capability over time
 | Qwen 3.5 27B (UD-IQ3_XXS) | local llama.cpp | 29 | 3 | 2 | **94.1%** | 68.5 min | 121 s |
 | Qwen 3.5 9B (UD-Q4_K_XL) | local llama.cpp | 1/1 (dot-dsl only) | 0 | 0 | **100%** (n=1) | 52 s | 52 s |
 
-> **Comparison context.** [little-coder reports 45.56%](https://github.com/itayinbarr/little-coder) on the *full 225-exercise* benchmark with Qwen 3.5 9B. Our numbers are on the *Python-only 34-exercise subset*, so they are not directly comparable yet — the natural next step is a full 6-language run with `-m 9b` for a like-for-like number.
+> **Comparing with little-coder.** [little-coder reports 45.56%](https://github.com/itayinbarr/little-coder) on the *full 225-exercise* polyglot with **Qwen 3.5 9B via Ollama** (Ollama's default tag = **Q4_K_M**, ≈5.6 GB). AINow's `9b` alias uses **UD-Q4_K_XL** (Unsloth Dynamic, ≈5.7 GB) — comparable quant. Our 97.1%/94.1% numbers are on the *Python-only 34-exercise subset* with online and 27B local respectively, so they are **not directly comparable** to little-coder's full-benchmark figure. To compare like-for-like, run all 6 languages with `-m 9b`:
+>
+> ```bash
+> for lang in python javascript java go rust cpp; do
+>   python benchmarks/aider_polyglot.py --model 9b --lang $lang
+> done
+> ```
 
 ### Failure analysis
 
@@ -78,7 +99,7 @@ Both failures sit in the long-tail of timing (445–605 s), suggesting these are
 ```bash
 git clone --depth 1 --filter=blob:none --sparse \
     https://github.com/Aider-AI/polyglot-benchmark.git ~/polyglot-benchmark
-git -C ~/polyglot-benchmark sparse-checkout set python   # only Python wired up so far
+git -C ~/polyglot-benchmark sparse-checkout set python javascript go rust cpp java
 ```
 
 Set `POLYGLOT_BENCHMARK_ROOT` if you cloned somewhere other than `D:/dev/polyglot-benchmark` (the harness default):
@@ -171,6 +192,6 @@ Together, the iteration bump + duplicate-call detector took the online Python pa
 
 ## Roadmap
 
-- **Other languages** — wire up `_prepare_<lang>` + `_run_<lang>` for cpp, go, java, javascript, rust (each language needs the equivalent of `python -m pytest -x -q`).
-- **Local-model baseline** — full 6-language run with `-m 9b` and `-m 27b` for apples-to-apples vs little-coder.
+- **Toolchain installs** — only python + javascript are runnable on the default Windows AINow setup; go / rust / java / cpp need the corresponding compiler/SDK before their language descriptors will work end-to-end.
+- **Full 6-language run with `-m 9b`** — direct apples-to-apples vs little-coder's 45.56%.
 - **Terminal-Bench 2.0** and **GAIA Validation** — the other two benchmarks little-coder runs. Both have public test sets.
