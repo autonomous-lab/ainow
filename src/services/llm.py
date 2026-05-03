@@ -882,6 +882,22 @@ class LLMService:
                     max_tokens=max_tok,
                     temperature=0.7,
                 )
+                # OpenRouter routes a single model_id across multiple upstream
+                # providers and sometimes pins one that's out of credit /
+                # rate-limited. Allow pinning via env vars so users can force
+                # a healthy provider:
+                #   AINOW_OPENROUTER_PROVIDER=SiliconFlow      -> only that provider
+                #   AINOW_OPENROUTER_IGNORE=DeepSeek,Hyperbolic -> exclude these
+                if "openrouter.ai" in (self._base_url or ""):
+                    _only = os.getenv("AINOW_OPENROUTER_PROVIDER", "").strip()
+                    _ignore = os.getenv("AINOW_OPENROUTER_IGNORE", "").strip()
+                    _provider: Dict[str, Any] = {}
+                    if _only:
+                        _provider["only"] = [p.strip() for p in _only.split(",") if p.strip()]
+                    if _ignore:
+                        _provider["ignore"] = [p.strip() for p in _ignore.split(",") if p.strip()]
+                    if _provider:
+                        create_kwargs["provider"] = _provider
                 # Skip tools when the latest user message has audio attached:
                 # llama.cpp Gemma 4 audio works best without tool definitions
                 # crowding the prompt — model otherwise refuses or makes irrelevant tool calls.
