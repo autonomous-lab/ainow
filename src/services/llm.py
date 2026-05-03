@@ -18,7 +18,7 @@ from . import agents
 
 log = ServiceLogger("LLM")
 
-MAX_TOOL_ITERATIONS = 15
+MAX_TOOL_ITERATIONS = 30
 
 # Chat-template token detection / filtering for streaming content.
 import re as _re
@@ -848,6 +848,13 @@ class LLMService:
             # Track recent tool-call failures to break loops where the model
             # retries the same failing command over and over.
             _recent_failures: Dict[str, int] = {}  # "name:args_hash" -> fail count
+            # Track consecutive identical SUCCESSFUL calls — small models in
+            # agentic loops sometimes re-read the same file 4-5x in a row out
+            # of indecision. After two identical calls in a row we inject a
+            # system note telling them to commit to an action instead of
+            # re-fetching context they already have.
+            _last_call_sig: Optional[str] = None
+            _consecutive_same: int = 0
             while True:  # Tool call loop
                 tool_iterations += 1
                 if tool_iterations > MAX_TOOL_ITERATIONS:
@@ -920,8 +927,17 @@ class LLMService:
                 # v2.24+ adds an implicit assistant prefill that llama-server
                 # rejects with "Cannot have 2 or more assistant messages".
                 # Raw SSE also captures reasoning_content that the SDK strips.
+                # Also use raw SSE for DeepSeek (reasoning model with
+                # non-standard tool-call streaming that trips the SDK parser
+                # — produces finish_reason=tool_calls with tool_calls_acc=0).
                 _is_local = "localhost" in self._base_url or "127.0.0.1" in self._base_url
-                _use_raw_sse = _is_local
+                _is_deepseek = "deepseek" in (self._model or "").lower()
+                # OpenRouter routes Gemini / DeepSeek / other models whose
+                # tool_call SSE format the OpenAI SDK Pydantic parser strips —
+                # producing finish_reason=tool_calls with tool_calls_acc=0 and
+                # zero output. Bypass the SDK for any OpenRouter base URL.
+                _is_openrouter = "openrouter.ai" in (self._base_url or "")
+                _use_raw_sse = _is_local or _is_deepseek or _is_openrouter
                 for attempt in range(3):
                     try:
                         if _use_raw_sse:
@@ -971,6 +987,18 @@ class LLMService:
                         stream=True,
                     )
                     log.info(f"SSE response status: {_sse_resp.status_code}")
+                    # Drain + log the error body when 4xx/5xx so we can see
+                    # the provider's actual complaint instead of guessing.
+                    if _sse_resp.status_code >= 400:
+                        try:
+                            _err_body = b""
+                            async for _chunk in _sse_resp.aiter_bytes():
+                                _err_body += _chunk
+                                if len(_err_body) > 4096:
+                                    break
+                            log.error(f"SSE error body: {_err_body.decode('utf-8', errors='replace')[:2000]}")
+                        except Exception as _e:
+                            log.error(f"SSE error body drain failed: {_e}")
                     _raw_chunks = _sse_resp.aiter_lines()
                 else:
                     _raw_chunks = None
@@ -1267,7 +1295,13 @@ class LLMService:
                 log.info(f"Stream done: finish_reason={finish_reason} tool_calls_acc={len(tool_calls_acc)} content_len={len(content)}")
                 if content and len(content) < 500:
                     log.info(f"Stream content: {content!r}")
-                if finish_reason == "tool_calls" or (tool_calls_acc and not content.strip()):
+                # Only enter the tool-call branch when we actually have tool
+                # calls parsed. Some providers (OpenRouter's DeepSeek) return
+                # finish_reason=tool_calls but stream zero tool_call fragments
+                # the SDK can parse — appending an empty `tool_calls: []`
+                # assistant message caused DeepSeek to error with
+                # "Function call should not be used with prefix" on retry.
+                if tool_calls_acc and (finish_reason == "tool_calls" or not content.strip()):
                     pre_tool_text = content  # Save text before tool execution for dedup
                     # Build the assistant message with tool_calls
                     tool_calls_list = []
@@ -1283,6 +1317,18 @@ class LLMService:
                         })
 
                     assistant_msg = {"role": "assistant", "content": content or None, "tool_calls": tool_calls_list}
+                    # DeepSeek reasoning models require the reasoning_content
+                    # field to round-trip in EVERY assistant message that has
+                    # tool_calls — even empty string. Without it the follow-up
+                    # call errors with "The `reasoning_content` in the thinking
+                    # mode must be passed back to the API." Other providers
+                    # ignore extra fields. Use ("deepseek" in self._model) as
+                    # the signal; we can generalize later if another provider
+                    # needs the same treatment.
+                    if "deepseek" in (self._model or "").lower():
+                        assistant_msg["reasoning_content"] = "".join(_thinking_buf) if _thinking_buf else ""
+                    elif _thinking_buf:
+                        assistant_msg["reasoning_content"] = "".join(_thinking_buf)
                     messages.append(assistant_msg)
                     # Persist to history so reloaded sessions can re-render tool calls
                     self._history.append(assistant_msg)
@@ -1369,6 +1415,30 @@ class LLMService:
                         # Notify UI
                         if self._on_tool_result:
                             await self._on_tool_result(tc_id, tc_name, result)
+
+                        # Consecutive-duplicate detection: same tool with
+                        # identical args called twice in a row. Models that
+                        # got stuck in indecision (re-reading the same file
+                        # 4-5x) accounted for most of the polyglot benchmark
+                        # failures. Counts only successful calls — repeated
+                        # errors are already handled below.
+                        try:
+                            _args_repr = json.dumps(tc_args, sort_keys=True, default=str)[:500]
+                        except Exception:
+                            _args_repr = repr(tc_args)[:500]
+                        _call_sig = f"{tc_name}:{_args_repr}"
+                        if _call_sig == _last_call_sig:
+                            _consecutive_same += 1
+                        else:
+                            _consecutive_same = 1
+                            _last_call_sig = _call_sig
+                        if _consecutive_same >= 2 and not str(result).startswith(("Error", "[ERROR", "error")):
+                            result += (
+                                "\n\n[SYSTEM: You just called this exact tool with the same "
+                                "arguments. The result has not changed. Stop re-fetching "
+                                "context you already have — commit to the next action "
+                                "(edit a file, run tests, or finish the turn).]"
+                            )
 
                         # Detect repeated failures: if the same tool keeps
                         # returning a similar error, inject a stop-retrying

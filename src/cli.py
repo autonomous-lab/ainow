@@ -529,6 +529,7 @@ class CLIState:
             on_tool_result=_on_tool_result,
             on_tool_confirm=self.confirm,
             on_thinking=_on_thinking,
+            cwd=getattr(self, "tool_cwd_override", None),
         )
 
     async def _noop_done(self) -> None:
@@ -1645,6 +1646,10 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Skip every confirmation prompt: auto-approve all dangerous tool calls (write, edit, bash, MCP). Use with care.",
     )
+    p.add_argument(
+        "--cwd", default=None,
+        help="Sandbox tools to this directory instead of the agent's workspace (used by benchmark harnesses).",
+    )
     args = p.parse_args(argv)
 
     # Make imports work when invoked from anywhere
@@ -1673,6 +1678,10 @@ def main(argv: list[str] | None = None) -> None:
     state = CLIState(yolo=args.auto_approve)
     state.model_alias = model_alias
     state.agent_name = agent_store.get_active()
+    if args.cwd:
+        state.tool_cwd_override = str(Path(args.cwd).resolve())
+    else:
+        state.tool_cwd_override = None
     # LLMService init is deferred to the first turn — it pulls in ~500ms of
     # openai / httpx imports we don't need to pay for just to render the banner.
 

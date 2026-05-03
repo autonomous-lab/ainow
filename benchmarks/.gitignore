@@ -1,0 +1,4 @@
+# transient per-run artifacts
+_work/
+polyglot_logs/
+results_polyglot.json

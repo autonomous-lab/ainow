@@ -41,6 +41,7 @@ MODEL_ALIASES = {
     "27b-iq2": "qwen3.6-27b-iq2",
     "online": "online",
     "online2": "online2",
+    "deepseek": "deepseek-v4-flash",
 }
 
 
@@ -131,6 +132,13 @@ def _build_models():
             "base_url": os.getenv("ONLINE2_BASE_URL", "https://openrouter.ai/api/v1"),
             "api_key_env": "ONLINE_API_KEY",  # shares the same OpenRouter key
             "model_id": os.getenv("ONLINE2_MODEL", "google/gemma-4-31b-it:free"),
+        },
+        "deepseek-v4-flash": {
+            "name": "DeepSeek V4 Flash (online)",
+            "online": True,
+            "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://openrouter.ai/api/v1"),
+            "api_key_env": "ONLINE_API_KEY",  # shares the same OpenRouter key
+            "model_id": os.getenv("DEEPSEEK_MODEL", "deepseek/deepseek-v4-flash"),
         },
     }
 
