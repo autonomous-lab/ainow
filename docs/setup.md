@@ -12,6 +12,19 @@ cp .env.example .env   # edit as needed
 python main.py
 ```
 
+### Optional: install the `ainow` command
+
+`pip install -e .` registers an `ainow` console script that invokes the headless CLI from anywhere — no need to `cd` into the repo or remember `python -m src.cli`:
+
+```bash
+pip install -e .
+ainow "list the biggest python files under src/"
+ainow -i                       # REPL
+ainow --yolo -m 9b "refactor foo.py"
+```
+
+Editable install means edits to `src/` are picked up live; no reinstall needed.
+
 ## Custom models
 
 Add any GGUF model by setting an env var pointing to a directory:

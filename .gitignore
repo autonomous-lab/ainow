@@ -14,3 +14,8 @@ agents/
 llama-server-turboquant/
 llama-server-mainline/
 .llama-mainline/
+
+# Editable-install / packaging artifacts
+*.egg-info/
+build/
+dist/
