@@ -508,6 +508,16 @@ class CLIState:
                 Text.assemble(("[auto] ", "dim yellow"), (f"approved {name}", "dim"))
             )
             return True
+        # Pipe mode (one-shot non-interactive) has no human at the keyboard
+        # to answer y/N. Auto-deny with a clear stderr message so the agent
+        # can adapt rather than freeze waiting on stdin.
+        if getattr(self, "pipe_mode", False):
+            console.print(Text.from_markup(
+                f"[yellow][auto-deny][/yellow] {name} — pass [cyan]--yolo[/cyan] "
+                f"to auto-approve tools in pipe mode, or use [cyan]-i[/cyan] "
+                f"for an interactive prompt."
+            ))
+            return False
         # In Textual mode, sys.stdin is owned by the App — calling readline()
         # would deadlock the event loop. Route the prompt through a ModalScreen.
         if _TEXTUAL_APP is not None:
