@@ -444,8 +444,14 @@ async def _on_thinking(text: str, duration: float, done: bool) -> None:
             sys.stderr.flush()
 
 
-def _prompt_confirm(name: str, args) -> bool:
-    """Synchronous y/N prompt for dangerous tools."""
+async def _prompt_confirm(name: str, args) -> bool:
+    """y/N prompt for dangerous tools.
+
+    Runs the blocking stdin read on a thread executor so the asyncio
+    event loop keeps pumping while the user types. Without this on
+    Windows, console input wouldn't fire until the terminal lost and
+    regained focus (the classic 'switch tab and come back' bug).
+    """
     console.print(
         Text.assemble(
             ("? ", "bold yellow"),
@@ -457,8 +463,10 @@ def _prompt_confirm(name: str, args) -> bool:
         ),
         end="",
     )
+    sys.stderr.flush()
+    sys.stdout.flush()
     try:
-        answer = sys.stdin.readline()
+        answer = await asyncio.to_thread(sys.stdin.readline)
     except EOFError:
         return False
     return answer.strip().lower() in ("y", "yes")
@@ -514,7 +522,7 @@ class CLIState:
                 # point Textual is likely broken anyway.
                 console.print(Text.from_markup(f"[red]confirm modal failed: {e}[/red]"))
                 return False
-        return _prompt_confirm(name, args)
+        return await _prompt_confirm(name, args)
 
     def _ensure_llm(self):
         if self.llm is not None:
