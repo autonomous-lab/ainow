@@ -1298,7 +1298,7 @@ async def _run_one_turn(state: CLIState, prompt: str) -> None:
             if _CHATLOG._fragments and not _CHATLOG._fragments[-1][1].endswith("\n"):
                 _CHATLOG.append("\n")
             _CHATLOG.append_line(summary, "fg:ansibrightblack")
-        else:
+        elif not getattr(state, "pipe_mode", False):
             console.print(Text.from_markup(f"[dim]{summary}[/dim]"))
 
 
@@ -1682,6 +1682,9 @@ def main(argv: list[str] | None = None) -> None:
         state.tool_cwd_override = str(Path(args.cwd).resolve())
     else:
         state.tool_cwd_override = None
+    # Pipe-friendly mode: `ainow "prompt"` without -i should print only the
+    # answer to stdout (no banner, no tok/s line) so output pipes cleanly.
+    state.pipe_mode = bool(args.prompt) and not args.interactive
     # LLMService init is deferred to the first turn — it pulls in ~500ms of
     # openai / httpx imports we don't need to pay for just to render the banner.
 
@@ -1704,7 +1707,10 @@ def main(argv: list[str] | None = None) -> None:
         args.interactive and args.textual
         and sys.stdout.isatty() and sys.stderr.isatty()
     )
-    if not args.no_banner and not _will_altscreen and not _will_fullscreen and not _will_textual:
+    # Auto-suppress banner in pipe-friendly one-shot mode: `ainow "prompt"`
+    # without -i shouldn't print decorations that pollute piped stdout.
+    _one_shot_pipe = bool(args.prompt) and not args.interactive
+    if not args.no_banner and not _one_shot_pipe and not _will_altscreen and not _will_fullscreen and not _will_textual:
         from .services.model_manager import model_manager
         _banner(
             model_label=state.model_label(),
