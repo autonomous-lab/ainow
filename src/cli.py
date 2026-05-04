@@ -334,10 +334,17 @@ def _tool_check(name: str, result: str) -> None:
 async def _print_token(token: str) -> None:
     global STREAMED_TOKENS_IN_TURN, _WAITING_SPINNER
     STREAMED_TOKENS_IN_TURN += 1
-    # First token arrived — kill the waiting spinner if one is up.
+    # First token arrived — kill the waiting spinner if one is up. Await
+    # the cancellation so its stderr `\r\033[2K` cleanup runs BEFORE we
+    # write the token to stdout. Otherwise the clear-line races with the
+    # token write and eats the first few chars of the response.
     if _WAITING_SPINNER is not None:
-        _WAITING_SPINNER.cancel()
-        _WAITING_SPINNER = None
+        _spin, _WAITING_SPINNER = _WAITING_SPINNER, None
+        _spin.cancel()
+        try:
+            await _spin
+        except BaseException:
+            pass
     if _TEXTUAL_APP is not None:
         _TEXTUAL_APP.token_append(token)
     elif _CHATLOG is not None:
