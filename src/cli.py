@@ -332,8 +332,12 @@ def _tool_check(name: str, result: str) -> None:
 # ──────────────────────────────────────────────────────────────────────────
 
 async def _print_token(token: str) -> None:
-    global STREAMED_TOKENS_IN_TURN
+    global STREAMED_TOKENS_IN_TURN, _WAITING_SPINNER
     STREAMED_TOKENS_IN_TURN += 1
+    # First token arrived — kill the waiting spinner if one is up.
+    if _WAITING_SPINNER is not None:
+        _WAITING_SPINNER.cancel()
+        _WAITING_SPINNER = None
     if _TEXTUAL_APP is not None:
         _TEXTUAL_APP.token_append(token)
     elif _CHATLOG is not None:
@@ -343,6 +347,36 @@ async def _print_token(token: str) -> None:
         # status lines (which go to stderr).
         sys.stdout.write(token)
         sys.stdout.flush()
+
+
+# Module-level handle to the per-turn waiting spinner so _print_token can
+# cancel it as soon as the first chunk arrives. Kept None when no spinner
+# is active (e.g. pipe mode, Textual TUI which handles its own status).
+_WAITING_SPINNER: Optional[asyncio.Task] = None
+
+
+async def _waiting_spinner_loop() -> None:
+    """Render a one-line spinner on stderr until cancelled.
+
+    Used in the line-REPL to signal 'waiting for the model' between
+    submit and first token. Cleared with a CR + clear-line ANSI when
+    the spinner task is cancelled (or on stream completion).
+    """
+    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    import time as _t
+    start = _t.monotonic()
+    i = 0
+    try:
+        while True:
+            elapsed = _t.monotonic() - start
+            sys.stderr.write(f"\r\033[2K\033[2m{frames[i % len(frames)]} thinking… {elapsed:.1f}s\033[0m")
+            sys.stderr.flush()
+            i += 1
+            await asyncio.sleep(0.1)
+    except asyncio.CancelledError:
+        sys.stderr.write("\r\033[2K")  # erase the spinner line
+        sys.stderr.flush()
+        raise
 
 
 async def _on_tool_call(name: str, args) -> None:
@@ -1283,6 +1317,19 @@ async def _run_one_turn(state: CLIState, prompt: str) -> None:
             f"[dim]attached {len(attached_images)} image(s) as vision input[/dim]"
         ))
 
+    # Waiting spinner — only useful in the line-REPL where we'd otherwise
+    # be silent until first token. Textual TUI shows its own status, and
+    # pipe mode must keep stderr quiet for clean piping.
+    global _WAITING_SPINNER
+    _show_spinner = (
+        _TEXTUAL_APP is None
+        and _CHATLOG is None
+        and not getattr(state, "pipe_mode", False)
+        and sys.stderr.isatty()
+    )
+    if _show_spinner:
+        _WAITING_SPINNER = asyncio.create_task(_waiting_spinner_loop())
+
     try:
         await state.llm.start(clean_prompt, images=attached_images or None)
         await done.wait()
@@ -1294,6 +1341,13 @@ async def _run_one_turn(state: CLIState, prompt: str) -> None:
             pass
         console.print(Text.from_markup("\n[yellow]⏹ turn aborted[/yellow]"))
     finally:
+        if _WAITING_SPINNER is not None:
+            _WAITING_SPINNER.cancel()
+            try:
+                await _WAITING_SPINNER
+            except (asyncio.CancelledError, Exception):
+                pass
+            _WAITING_SPINNER = None
         signal.signal(signal.SIGINT, prev_handler)
 
     if STREAMED_TOKENS_IN_TURN > 0:
