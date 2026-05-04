@@ -27,7 +27,7 @@ python -m src.cli -i
 | **Headless CLI / TUI** — slash commands, keyboard shortcuts, `@path` expansion | [docs/cli.md](docs/cli.md) |
 | **Agents, MCP, scheduled tasks, tools, agentic loop, UI features** | [docs/agents-mcp.md](docs/agents-mcp.md) |
 | **Setup, env vars, custom models, security, project structure** | [docs/setup.md](docs/setup.md) |
-| **Benchmarks** — Aider Polyglot Python+JS: **100%** local Qwen 3.6 27B IQ2 (83/83) · vs little-coder 45.56% full | [docs/benchmarks.md](docs/benchmarks.md) |
+| **Benchmarks** — Aider Polyglot Python+JS: **100%** local Qwen 3.6 27B IQ2 · **100%** DeepSeek V4 Flash (83/83) · vs little-coder 45.56% full | [docs/benchmarks.md](docs/benchmarks.md) |
 
 ## Modes of use
 

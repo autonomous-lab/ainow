@@ -39,6 +39,7 @@ These match the test commands little-coder uses (which mirror Aider's own benchm
 |---|---|---:|---:|---:|---:|---:|---:|
 | Qwen 3.5 9B (UD-Q4_K_XL) | local llama.cpp | 40 | 5 | 4 | **91.8%** | 82 min | 100 s |
 | Qwen 3.6 27B (UD-IQ2_M) | local llama.cpp | 46 | 3 | 0 | **100.0%** | 108 min | 132 s |
+| DeepSeek V4 Flash | OpenRouter (online) | 49 | 0 | 0 | **100.0%** | 97 min | 119 s |
 
 #### Comparison vs little-coder
 
@@ -46,8 +47,9 @@ These match the test commands little-coder uses (which mirror Aider's own benchm
 
 | Coverage | Model | exercises | pass rate |
 |---|---|---:|---:|
-| AINow — Python + JavaScript | **Qwen 3.6 27B UD-IQ2_M** | 83/225 | **100.0%** |
-| AINow — Python + JavaScript | Qwen 3.5 9B UD-Q4_K_XL | 83/225 | 83.1% |
+| AINow — Python + JavaScript | **Qwen 3.6 27B UD-IQ2_M** (local) | 83/225 | **100.0%** |
+| AINow — Python + JavaScript | **DeepSeek V4 Flash** (OpenRouter) | 83/225 | **100.0%** |
+| AINow — Python + JavaScript | Qwen 3.5 9B UD-Q4_K_XL (local) | 83/225 | 83.1% |
 | little-coder — full 6-lang | Qwen 3.5 9B Q4_K_M (Ollama) | 225/225 | 45.56% |
 
 Not a clean head-to-head (different language coverage), but on the 83 exercises we share, AINow + Qwen 3.6 27B IQ2 hits a clean 100% — and even the smaller 9B model reaches 83.1% (almost double little-coder's reported figure on the same model class). Wiring up go / rust / java / cpp on a host with the corresponding toolchains will close out the comparison.
