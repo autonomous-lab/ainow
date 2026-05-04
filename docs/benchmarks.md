@@ -28,6 +28,7 @@ These match the test commands little-coder uses (which mirror Aider's own benchm
 | Model | Backend | pass_1 | pass_2 | fail | **pass rate** | wall-clock | mean / exo |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Qwen 3.6 27B (UD-IQ2_M) | local llama.cpp | 32 | 2 | 0 | **100.0%** | 57 min | 101 s |
+| DeepSeek V4 Flash | OpenRouter (online) | 33 | 1 | 0 | **100.0%** | 49 min | 87 s |
 | Gemini 3.1 Flash Lite | OpenRouter (online) | 31 | 2 | 1 | **97.1%** | ~25 min | ~36 s |
 | Qwen 3.5 27B (UD-IQ3_XXS) | local llama.cpp | 29 | 3 | 2 | **94.1%** | 68.5 min | 121 s |
 | Qwen 3.5 9B (UD-Q4_K_XL) | local llama.cpp | 18 | 6 | 10 | **70.6%** | 89 min | 157 s |
