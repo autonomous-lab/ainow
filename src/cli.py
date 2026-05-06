@@ -714,10 +714,36 @@ async def _handle_slash(state: "CLIState", line: str) -> bool:
             except Exception as e:
                 console.print(Text.from_markup(f"[red]config modal failed: {e}[/red]"))
                 return True
-        console.print(Text.from_markup(
-            "[dim]/config is only available in the Textual TUI "
-            "(run with `python -m src.cli -i --textual`)[/dim]"
-        ))
+        # Non-Textual REPL fallback: print the current state + hints on
+        # which slash commands change each value, instead of bouncing the
+        # user with "only in TUI". The interactive widgets only exist in
+        # Textual, but the same settings are reachable via /model /agent
+        # /thinking and the cli flags.
+        try:
+            from .services.model_manager import model_manager
+            from .services import agents as _agents
+            agent_name = state.agent_name or _agents.get_active()
+            try:
+                prefs = _agents.read_preferences(agent_name)
+            except Exception:
+                prefs = {}
+            lines = [
+                ("model       ", state.model_label()),
+                ("agent       ", agent_name),
+                ("permissions ", "yolo (auto-approve)" if state.yolo else "confirm"),
+                ("vision      ", "on" if prefs.get("vision_enabled", True) else "off"),
+                ("thinking    ", "on" if prefs.get("thinking_enabled", False) else "off"),
+                ("context     ", str(model_manager.get_context_size() or prefs.get("ctx") or "default")),
+            ]
+            body = "\n".join(f"[cyan]{k}[/cyan] [dim]{v}[/dim]" for k, v in lines)
+            body += (
+                "\n\n[dim]change via:  "
+                "/model <alias>   /agent <name>   /thinking   /permissions yolo|confirm   "
+                "or run with [cyan]-i --textual[/cyan] for the interactive config screen[/dim]"
+            )
+            console.print(Panel(Text.from_markup(body), title="config", border_style="dim", padding=(0, 1)))
+        except Exception as e:
+            console.print(Text.from_markup(f"[red]config snapshot failed: {e}[/red]"))
         return True
 
     if cmd == "verbose":
