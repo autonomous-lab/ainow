@@ -631,6 +631,22 @@ class ModelManager:
             # --reasoning-budget 0 = suppresses any residual <think> blocks
             cmd += ["--reasoning", "off", "--reasoning-budget", "0"]
 
+        # MTP (Multi-Token Prediction) speculative decoding
+        # See https://github.com/ggml-org/llama.cpp/pull/22673 — adds ~2x
+        # decode speedup on Qwen 3.5/3.6 by loading pre-trained MTP heads
+        # from the same GGUF and emitting N draft tokens per forward pass.
+        # Opt-in (the PR is still in draft + needs a binary built from the
+        # branch). Auto-skip if the model isn't a known MTP-capable family.
+        if os.getenv("AINOW_MTP", "").strip() in ("1", "true", "yes"):
+            _model_path = config.get("model", "").lower()
+            _is_mtp_family = any(tag in _model_path for tag in ("qwen3.5", "qwen3.6"))
+            if _is_mtp_family:
+                _draft_n = os.getenv("AINOW_MTP_DRAFT_N", "3").strip() or "3"
+                cmd += ["--spec-type", "mtp", "--spec-draft-n-max", _draft_n]
+                logger.info(f"MTP speculative decoding enabled (--spec-draft-n-max {_draft_n})")
+            else:
+                logger.info("AINOW_MTP set but current model isn't Qwen 3.5/3.6 — flag ignored")
+
         # Try to start — if TurboQuant cache types fail (mainline binary),
         # fall back to standard q4_0.
         _attempts = [(cmd, KV_CACHE_TYPE)]

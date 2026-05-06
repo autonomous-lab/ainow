@@ -140,6 +140,14 @@ LOCAL_TTS_VOICE=1                 # Kokoro TTS
 # stop runaway test/build processes from eating system RAM.
 # AINOW_BASH_MEMORY_CAP_GB=8
 
+# MTP speculative decoding — ~2x decode speedup on Qwen 3.5/3.6 (the only
+# families with pre-trained MTP heads). Requires a llama-server built from
+# https://github.com/ggml-org/llama.cpp/pull/22673 (still in draft as of
+# 2026-05). Enable per session:
+#   AINOW_MTP=1
+#   AINOW_MTP_DRAFT_N=3       # max draft tokens per pass (2-3 typical)
+# Silently no-op'd on non-Qwen-3.5+ models.
+
 # TurboQuant KV cache compression (default: turbo3 = 3.8x smaller KV)
 # KV_CACHE_TYPE=turbo3             # turbo2/turbo3/turbo4 require a TurboQuant llama-server build
                                    # falls back to q4_0 automatically on mainline binaries
