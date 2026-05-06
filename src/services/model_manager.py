@@ -642,8 +642,11 @@ class ModelManager:
             _is_mtp_family = any(tag in _model_path for tag in ("qwen3.5", "qwen3.6"))
             if _is_mtp_family:
                 _draft_n = os.getenv("AINOW_MTP_DRAFT_N", "3").strip() or "3"
-                cmd += ["--spec-type", "mtp", "--spec-draft-n-max", _draft_n]
-                logger.info(f"MTP speculative decoding enabled (--spec-draft-n-max {_draft_n})")
+                # MTP requires n_parallel=1 (the binary errors out with
+                # "MTP currently supports only n_parallel=1; got 4").
+                cmd += ["--spec-type", "mtp", "--spec-draft-n-max", _draft_n,
+                        "--parallel", "1"]
+                logger.info(f"MTP speculative decoding enabled (--spec-draft-n-max {_draft_n}, --parallel 1)")
             else:
                 logger.info("AINOW_MTP set but current model isn't Qwen 3.5/3.6 — flag ignored")
 

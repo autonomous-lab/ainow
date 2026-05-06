@@ -207,8 +207,42 @@ Bringing the benchmark up exposed several AINow issues that were fixed at the sa
 
 Together, the iteration bump + duplicate-call detector took the online Python pass rate from **82.4% → 97.1%**.
 
+## MTP speculative decoding (llama.cpp PR #22673)
+
+[PR #22673](https://github.com/ggml-org/llama.cpp/pull/22673) adds Multi-Token Prediction speculative decoding to llama.cpp. The model emits N draft tokens per forward pass via pre-trained MTP heads embedded in the GGUF, and the main model verifies them in a single pass.
+
+### Decode-throughput benchmark — Qwen 3.5 4B Q4_K_M
+
+Measured on a single RTX 5080, full GPU offload, `-c 4096`, `-ngl 99`, q4_0 KV cache. Same prompt (the `is_prime` exercise from `benchmarks/mtp_bench.py`), 400 max tokens, 3 runs averaged.
+
+| Setup | tok/s | vs baseline |
+|---|---:|---:|
+| TurboQuant binary, vanilla GGUF | 165.5 | 1.00× |
+| MTP-PR binary, MTP off, vanilla GGUF | 177.2 | 1.07× (upstream-only) |
+| **MTP-PR binary + MTP-equipped GGUF + `--spec-type mtp --spec-draft-n-max 3 --parallel 1`** | **259.8** | **1.57×** |
+
+The PR claims ~2× on Qwen 3.6 27B / 35B (more layers → more skipped). On 4B we get 1.57× end-to-end (1.47× isolating just the MTP feature from the binary upgrade).
+
+### Wiring it up in AINow
+
+```bash
+# .env
+LLAMA_SERVER_EXE=/path/to/llama-server-mtp/llama-server.exe   # PR-built binary
+AINOW_MTP=1
+AINOW_MTP_DRAFT_N=3
+```
+
+`model_manager.py` auto-detects Qwen 3.5 / 3.6 in the model path and adds `--spec-type mtp --spec-draft-n-max <N> --parallel 1` to the launch args. Other model families silently skip the flags. Caveat: the GGUF must include MTP heads — standard Qwen quants strip them. Use one of the prebuilt MTP GGUFs:
+
+- `am17an/Qwen3.6-27B-MTP-GGUF` — official author build
+- `am17an/Qwen3.6-35BA3B-MTP-GGUF` — official MoE build
+- `localweights/Qwen3.5-4B-MTP-Q4_K_M-GGUF` — small one we used for the bench above
+
+Reproduce the benchmark above with `python benchmarks/mtp_bench.py`.
+
 ## Roadmap
 
 - **Toolchain installs** — only python + javascript are runnable on the default Windows AINow setup; go / rust / java / cpp need the corresponding compiler/SDK before their language descriptors will work end-to-end.
 - **Full 6-language run with `-m 9b`** — direct apples-to-apples vs little-coder's 45.56%.
 - **Terminal-Bench 2.0** and **GAIA Validation** — the other two benchmarks little-coder runs. Both have public test sets.
+- **Re-run polyglot with MTP-enabled GGUFs** once `am17an/Qwen3.6-27B-MTP-GGUF` is benchmarked at quality parity — should ~halve wall-clock on the 27B 100% runs.
