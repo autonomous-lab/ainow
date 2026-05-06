@@ -1757,6 +1757,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = p.parse_args(argv)
 
+    # `ainow` invoked with no prompt and no -i — assume the user wants the
+    # interactive UI rather than a silent line-REPL. Only auto-promote when
+    # both stdout and stderr are TTYs (otherwise we'd hang piping consumers).
+    if not args.prompt and not args.interactive and sys.stdout.isatty() and sys.stderr.isatty():
+        args.interactive = True
+
     # Make imports work when invoked from anywhere
     repo_root = Path(__file__).resolve().parent.parent
     if str(repo_root) not in sys.path:
