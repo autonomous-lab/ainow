@@ -226,7 +226,7 @@ The PR claims ~2× on Qwen 3.6 27B / 35B (more layers → more skipped). On 4B w
 ### Caveats observed during testing
 
 - **`--parallel 1` is mandatory** when `--spec-type mtp` is on. The binary errors `MTP currently supports only n_parallel=1; got 4` otherwise. AINow's model_manager passes it automatically when `AINOW_MTP=1`.
-- **Not every "MTP" GGUF actually loads.** Tested `localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF` (15 GB, dense Qwen 3.6 27B): metadata looks correct (`general.architecture = qwen35`, MTP head present), but the binary aborts mid-tensor-load with `error loading model: invalid vector subscript / failed to load MTP head`. The community quant probably wasn't built against the latest PR commit. If you hit this, fall back to the official `am17an/Qwen3.6-27B-MTP-GGUF` upload.
+- **Dense Qwen 3.6 27B + Q4 quants currently crash at MTP head load.** Tested two independently-built community quants — `localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF` (15 GB) and `RDson/Qwen3.6-27B-MTP-Q4_K_M-GGUF` (16.5 GB). Both abort identically with `error loading model: invalid vector subscript / failed to load MTP head` mid-tensor-load. The PR author's only public 27B GGUF is `am17an/Qwen3.6-27B-MTP-GGUF` at Q8_0 (29 GB) — too large for consumer 16 GB cards. Net: **MTP on 27B is not currently usable on 16 GB-class GPUs**; only Qwen 3.5 4B is reliable end-to-end.
 - **Reasoning-mode default differs by model.** Qwen 3.6 27B emits `reasoning_content` (thinking) by default — pass `--reasoning off --reasoning-budget 0` to llama-server (or set `thinking_enabled=false` per-agent) for clean decode-rate measurements.
 
 ### Wiring it up in AINow
