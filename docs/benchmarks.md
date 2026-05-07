@@ -223,6 +223,12 @@ Measured on a single RTX 5080, full GPU offload, `-c 4096`, `-ngl 99`, q4_0 KV c
 
 The PR claims ~2× on Qwen 3.6 27B / 35B (more layers → more skipped). On 4B we get 1.57× end-to-end (1.47× isolating just the MTP feature from the binary upgrade).
 
+### Caveats observed during testing
+
+- **`--parallel 1` is mandatory** when `--spec-type mtp` is on. The binary errors `MTP currently supports only n_parallel=1; got 4` otherwise. AINow's model_manager passes it automatically when `AINOW_MTP=1`.
+- **Not every "MTP" GGUF actually loads.** Tested `localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF` (15 GB, dense Qwen 3.6 27B): metadata looks correct (`general.architecture = qwen35`, MTP head present), but the binary aborts mid-tensor-load with `error loading model: invalid vector subscript / failed to load MTP head`. The community quant probably wasn't built against the latest PR commit. If you hit this, fall back to the official `am17an/Qwen3.6-27B-MTP-GGUF` upload.
+- **Reasoning-mode default differs by model.** Qwen 3.6 27B emits `reasoning_content` (thinking) by default — pass `--reasoning off --reasoning-budget 0` to llama-server (or set `thinking_enabled=false` per-agent) for clean decode-rate measurements.
+
 ### Wiring it up in AINow
 
 ```bash

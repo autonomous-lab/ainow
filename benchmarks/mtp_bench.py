@@ -71,7 +71,11 @@ def _stream_decode(model_id: str) -> tuple[int, float]:
             if not choices:
                 continue
             delta = choices[0].get("delta") or {}
-            if delta.get("content"):
+            # Count any content-bearing field. Qwen 3.6 emits
+            # `reasoning_content` instead of `content` when thinking
+            # is enabled — same compute cost per chunk.
+            chunk = delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning")
+            if chunk:
                 if t0 is None:
                     t0 = time.monotonic()
                 n_tok += 1
@@ -87,6 +91,9 @@ def _run_one(label: str, exe: str, model: str, ngl: int, ctx: int, extra: list[s
         "-c", str(ctx), "-ngl", str(ngl),
         "-ctk", "q4_0", "-ctv", "q4_0",
         "--no-warmup",
+        # Disable reasoning so we measure pure decode speed (Qwen 3.6
+        # defaults to thinking-on which adds variance across runs).
+        "--reasoning", "off", "--reasoning-budget", "0",
     ] + extra
     print(f"\n=== {label} ===")
     print("cmd:", " ".join('"' + a + '"' if " " in a else a for a in args))
@@ -120,52 +127,58 @@ def _run_one(label: str, exe: str, model: str, ngl: int, ctx: int, extra: list[s
     return None
 
 
+def _bench_model_size(label: str, base_model: Path, mtp_model: Path,
+                      tq_exe: Path, mtp_exe: Path, ngl: int, ctx: int) -> dict:
+    """Run the 3-setup comparison on a single model size."""
+    print(f"\n\n########## {label} ##########")
+    print(f"baseline: {base_model}")
+    print(f"MTP:      {mtp_model}")
+    results = {}
+    if base_model.is_file() and tq_exe.is_file():
+        results[f"{label}: baseline (TurboQuant binary)"] = _run_one(
+            f"{label} baseline", str(tq_exe), str(base_model), ngl, ctx, []
+        )
+    if mtp_model.is_file() and mtp_exe.is_file():
+        results[f"{label}: MTP binary, MTP off"] = _run_one(
+            f"{label} MTP-off", str(mtp_exe), str(base_model), ngl, ctx, []
+        )
+        results[f"{label}: MTP binary + MTP on"] = _run_one(
+            f"{label} MTP-on", str(mtp_exe), str(mtp_model), ngl, ctx,
+            ["--spec-type", "mtp", "--spec-draft-n-max", "3", "--parallel", "1"],
+        )
+    return results
+
+
 def main():
     repo = Path(__file__).resolve().parent.parent
     tq_exe = repo / "llama-server-turboquant" / "llama-server.exe"
     mtp_exe = repo / "llama-server-mtp" / "llama-server.exe"
-    base_model = Path(os.path.expanduser("~/.lmstudio/models/lmstudio-community/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"))
-    if not base_model.is_file():
-        # Fall back to whatever 4B GGUF the user has (skip MTP variants)
-        for cand in Path(os.path.expanduser("~/.lmstudio/models")).rglob("*Qwen3.5-4B*Q4_K_M*.gguf"):
-            if "MTP" not in cand.name:
-                base_model = cand
-                break
-    mtp_model = Path(os.path.expanduser("~/.lmstudio/models/localweights/Qwen3.5-4B-MTP-Q4_K_M-GGUF/Qwen3.5-4B-MTP-Q4_K_M.gguf"))
+    models = Path(os.path.expanduser("~/.lmstudio/models"))
 
-    print(f"baseline model: {base_model}")
-    print(f"MTP model:      {mtp_model}")
     print(f"prompt: {PROMPT!r}")
     print(f"max_tokens: {MAX_TOKENS}, n_runs: {N_RUNS}")
 
-    results = {}
-    if base_model.is_file() and tq_exe.is_file():
-        results["baseline (TurboQuant binary, vanilla model)"] = _run_one(
-            "baseline (TurboQuant)", str(tq_exe), str(base_model), 99, 4096, []
-        )
-    if mtp_model.is_file() and mtp_exe.is_file():
-        # MTP requires `--parallel 1` (the binary refuses to start with the
-        # default n_parallel=4). The same constraint holds when running via
-        # AINow — we'll need to pass --parallel 1 from model_manager.
-        results["MTP (PR #22673 binary + MTP-equipped model)"] = _run_one(
-            "MTP (PR #22673)", str(mtp_exe), str(mtp_model), 99, 4096,
-            ["--spec-type", "mtp", "--spec-draft-n-max", "3", "--parallel", "1"],
-        )
-        # Also bench the same MTP binary WITHOUT MTP for a within-binary
-        # comparison (isolates the MTP feature impact from binary build
-        # differences).
-        results["MTP binary, MTP off (same binary, vanilla model)"] = _run_one(
-            "MTP binary, no spec", str(mtp_exe), str(base_model), 99, 4096, []
-        )
+    all_results = {}
+
+    # 4B
+    b4 = models / "lmstudio-community/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"
+    m4 = models / "localweights/Qwen3.5-4B-MTP-Q4_K_M-GGUF/Qwen3.5-4B-MTP-Q4_K_M.gguf"
+    if b4.is_file() and m4.is_file():
+        all_results.update(_bench_model_size("Qwen 3.5 4B", b4, m4, tq_exe, mtp_exe, 99, 4096))
+
+    # 27B (dense). Note: baseline IQ2_M and MTP IQ4_XS are different
+    # quants — the MTP variant is at higher precision so without MTP
+    # it would normally be slower per-token. Any speedup on the MTP-on
+    # row is the feature winning even against that quant disadvantage.
+    b27 = models / "unsloth/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-IQ2_M.gguf"
+    m27 = models / "localweights/Qwen3.6-27B-MTP-IQ4_XS-GGUF/Qwen3.6-27B-MTP-IQ4_XS.gguf"
+    if b27.is_file() and m27.is_file():
+        all_results.update(_bench_model_size("Qwen 3.6 27B", b27, m27, tq_exe, mtp_exe, 99, 4096))
 
     print("\n\n=== summary ===")
-    for k, v in results.items():
-        print(f"  {k:<55} {v if v is not None else 'failed':>10}")
-    if "baseline (TurboQuant binary, vanilla model)" in results and "MTP (PR #22673 binary + MTP-equipped model)" in results:
-        b = results["baseline (TurboQuant binary, vanilla model)"]
-        m = results["MTP (PR #22673 binary + MTP-equipped model)"]
-        if b and m:
-            print(f"\nMTP speedup over baseline: {m/b:.2f}x")
+    for k, v in all_results.items():
+        v_str = f"{v:.1f} tok/s" if v is not None else "failed"
+        print(f"  {k:<55} {v_str:>15}")
 
 
 if __name__ == "__main__":
